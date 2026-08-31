@@ -241,11 +241,27 @@ run_streamed() {
   return "$__rc"
 }
 
+# Reports how a project's HEAD moved, robust to force-sync / rebase / rewind.
+# The old 'rev-list --count A..B' (two-dot) counted only commits ADDED and
+# reported "1" for a sync that force-synced 2 commits away and added 1 new
+# one — the removed commits were invisible. Verified against a synthetic
+# rewind: two-dot reports "1", while 'rev-list --left-right --count A...B'
+# correctly reports "2 <tab> 1" (removed, added).
+#
+# Echoes: "+N -M" | "new" | "gone" | "replaced"
 count_commits() {
-  local path="$1" before="$2" after="$3" n
-  n="$(git -C "$path" rev-list --count "${before}..${after}" 2>/dev/null)"
-  [[ -z "$n" ]] && n="?"
-  echo "$n"
+  local path="$1" before="$2" after="$3" counts removed added
+
+  [[ -z "$before" || "$before" == "NONE" ]] && { echo "new";  return; }
+  [[ -z "$after"  || "$after"  == "NONE" ]] && { echo "gone"; return; }
+  git -C "$path" cat-file -e "${before}^{commit}" 2>/dev/null \
+    || { echo "replaced"; return; }
+
+  counts="$(git -C "$path" rev-list --left-right --count "${before}...${after}" 2>/dev/null)"
+  [[ -z "$counts" ]] && { echo "replaced"; return; }
+  removed="${counts%%[[:space:]]*}"
+  added="${counts##*[[:space:]]}"
+  echo "+${added} -${removed}"
 }
 
 # wipes the local working copy AND the repo-tool internal object dirs
@@ -300,16 +316,29 @@ print_change_details() {
   rc=$?
 
   if [[ $rc -eq 0 ]]; then
-    local commit_count
+    # Two-dot (before..after) only shows commits ADDED. Also check the
+    # reverse direction (after..before) so a force-sync rewind — which two-
+    # dot alone reports as "0 commit(s)" with nothing to show — is visible.
+    local added_count removed_count removed_log
     if [[ -z "$log_output" ]]; then
-      commit_count=0
+      added_count=0
     else
-      commit_count="$(printf '%s\n' "$log_output" | grep -c .)"
+      added_count="$(printf '%s\n' "$log_output" | grep -c .)"
+    fi
+    removed_log="$(git -C "$path" log --oneline --no-decorate "${after_sha}..${before_sha}" 2>/dev/null)"
+    if [[ -z "$removed_log" ]]; then
+      removed_count=0
+    else
+      removed_count="$(printf '%s\n' "$removed_log" | grep -c .)"
     fi
     echo ""
-    echo "${C_GREEN}[CHANGED]${C_RESET} $path  (${name})  (${before_sha:0:12} -> ${after_sha:0:12}, ${commit_count} commit(s))"
-    if [[ "$commit_count" -gt 0 ]]; then
+    echo "${C_GREEN}[CHANGED]${C_RESET} $path  (${name})  (${before_sha:0:12} -> ${after_sha:0:12}, +${added_count} -${removed_count} commit(s))"
+    if [[ "$added_count" -gt 0 ]]; then
       printf '%s\n' "$log_output" | sed 's/^/    /'
+    fi
+    if [[ "$removed_count" -gt 0 ]]; then
+      echo "  ${C_RED}removed by force-sync/rebase:${C_RESET}"
+      printf '%s\n' "$removed_log" | sed 's/^/    - /'
     fi
   else
     echo ""
@@ -567,7 +596,8 @@ cmd_sync() {
   local ALL_PATHS
   ALL_PATHS="$(printf '%s\n' "${!BEFORE_MAP[@]}" "${!AFTER_MAP[@]}" | sort -u)"
 
-  local changed_count=0 new_count=0 removed_count=0
+  local changed_count=0 new_count=0 removed_project_count=0
+  local commits_added_total=0 commits_removed_total=0
 
   echo ""
   echo "===================================================================="
@@ -588,32 +618,41 @@ cmd_sync() {
     if [[ -n "$before_sha" && -z "$after_sha" ]]; then
       echo ""
       echo "${C_RED}[REMOVED PROJECT]${C_RESET} $path  ($(project_name_for "$path"))  (was: ${before_sha:0:12})"
-      removed_count=$((removed_count + 1))
+      removed_project_count=$((removed_project_count + 1))
       continue
     fi
     if [[ "$before_sha" != "$after_sha" ]]; then
       changed_count=$((changed_count + 1))
       print_change_details "$path" "$before_sha" "$after_sha"
-      CHANGED_SUMMARY["$path"]="$(count_commits "$path" "$before_sha" "$after_sha")"
+      local commits
+      commits="$(count_commits "$path" "$before_sha" "$after_sha")"
+      CHANGED_SUMMARY["$path"]="$commits"
+      # commits is "+N -M" for the normal case; new/gone/replaced don't
+      # parse as numbers here and are simply skipped in the tally below.
+      if [[ "$commits" =~ ^\+([0-9]+)\ -([0-9]+)$ ]]; then
+        commits_added_total=$((commits_added_total + BASH_REMATCH[1]))
+        commits_removed_total=$((commits_removed_total + BASH_REMATCH[2]))
+      fi
     fi
   done <<< "$ALL_PATHS"
 
   echo ""
   echo "--------------------------------------------------------------------"
-  if [[ "$changed_count" -eq 0 && "$new_count" -eq 0 && "$removed_count" -eq 0 ]]; then
+  if [[ "$changed_count" -eq 0 && "$new_count" -eq 0 && "$removed_project_count" -eq 0 ]]; then
     echo "No project changes — tree was already up to date."
   else
-    echo "Projects changed: $changed_count   new: $new_count   removed: $removed_count"
+    echo "Projects changed: $changed_count   new: $new_count   removed: $removed_project_count   commits: +${commits_added_total} -${commits_removed_total}"
   fi
   echo "--------------------------------------------------------------------"
 
   echo ""
-  echo "${C_BOLD}==> Sync summary (path | project | commits)${C_RESET}"
+  echo "${C_BOLD}==> Sync summary${C_RESET}"
   if [[ "$changed_count" -eq 0 ]]; then
     echo "  (nothing changed)"
   else
+    printf '  %-40s %-45s %s\n' "PATH" "PROJECT" "COMMITS"
     for path in "${!CHANGED_SUMMARY[@]}"; do
-      printf '  %-40s %-45s %s commit(s)\n' "$path" "$(project_name_for "$path")" "${CHANGED_SUMMARY[$path]}"
+      printf '  %-40s %-45s %s\n' "$path" "$(project_name_for "$path")" "${CHANGED_SUMMARY[$path]}"
     done | sort
   fi
 
