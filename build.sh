@@ -2,11 +2,11 @@
 #
 # build.sh — AxionOS OP9 (lemonade) build + publish wrapper
 #
-# Drives the axion build via Axion's own 'ax -br' wrapper (see --help),
-# retries automatically when the remote build server kills the compile for
-# memory pressure ([MEMGUARD]), and publishes the finished zip to the web
-# root ([PUBLISH]). OTA (incremental / target_files) is intentionally
-# never touched — only the full zip is published.
+# Drives the axion build via Axion's own 'ax -b' wrapper, retries
+# automatically when the remote build server kills the compile for memory
+# pressure ([MEMGUARD]), and publishes the finished zip to the web root
+# ([PUBLISH]). OTA (incremental / target_files) is intentionally never
+# touched — only the full zip is published.
 #
 # This script must live at the ROM root on the build server (copy it there;
 # it is not itself part of the ROM tree). Run with --help for usage.
@@ -94,10 +94,6 @@ Usage: ./$SCRIPT_NAME [eng|userdebug|user] [options]
 
 Build type is the first positional arg. If omitted you'll be prompted
 (default: $DEFAULT_BUILD_TYPE).
-
-Note: the build runs through Axion's 'ax -br', which always runs its own
-'m installclean' regardless of these flags and doesn't forward -j — -j
-only affects the --sepolicy path.
 EOF
 }
 
@@ -286,7 +282,10 @@ run_build_attempt() {
         # shellcheck disable=SC1091
         source build/envsetup.sh
         axion "$DEVICE" "$BUILD_TYPE" "$GMS_VARIANT" || exit 1
-        ax -br "-j$JOBS" "$BUILD_TYPE"
+        # -b (bacon), not -br (brunch) — ax's -br re-lunches via
+        # brunch/breakfast and drops the job count on the way; -b runs
+        # 'm bacon "$jCount"' directly and actually honors -j.
+        ax -b "-j$JOBS" "$BUILD_TYPE"
     ) 2>&1 | tee -a "$BUILD_LOG"
     return "${PIPESTATUS[0]}"
 }
