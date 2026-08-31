@@ -2,11 +2,13 @@
 #
 # build.sh — AxionOS OP9 (lemonade) build + publish wrapper
 #
-# Drives the axion/ax build wrappers defined in this ROM tree's own
-# build/envsetup.sh, retries automatically when the remote build server kills
-# the compile for memory pressure ([MEMGUARD]), and publishes the finished
-# zip to the web root ([PUBLISH]). OTA (incremental / target_files) is
-# intentionally never touched — only the full zip is published.
+# Drives the axion build (via 'axion' to lunch + 'm bacon' directly — NOT
+# 'ax', which unconditionally installcleans and drops -j; see run_build_attempt)
+# defined in this ROM tree's own build/envsetup.sh, retries automatically when
+# the remote build server kills the compile for memory pressure ([MEMGUARD]),
+# and publishes the finished zip to the web root ([PUBLISH]). OTA
+# (incremental / target_files) is intentionally never touched — only the
+# full zip is published.
 #
 # This script must live at the ROM root on the build server (copy it there;
 # it is not itself part of the ROM tree). Run with --help for usage.
@@ -70,7 +72,7 @@ SCRIPT_NAME="$(basename "$0")"
 FORCE_RETRY=0
 DO_SEPOLICY=0
 SEPOLICY_ONLY=0
-DO_CLEAN=1
+CLEAN_MODE="clean"   # clean | installclean | none
 DO_MEMGUARD=1
 DO_PUBLISH=1
 BUILD_TYPE=""
@@ -85,14 +87,26 @@ Usage: ./$SCRIPT_NAME [eng|userdebug|user] [options]
   -f, --force         [MEMGUARD] retry on ANY failure, not just memory kills
       --sepolicy      [SEPOLICY] run the sepolicy check before the full build
       --sepolicy-only [SEPOLICY] run only the sepolicy check, then exit
-      --no-clean      skip 'rm -rf out/' on attempt 1 (resume an interrupted build)
+      --clean         'rm -rf out/' before building (default)
+      --installclean  'm installclean' before building — wipes installed
+                       images (\$OUT/system, /vendor, /product, target files)
+                       but keeps compiled objects; use when switching build
+                       variant (eng<->userdebug) without a full rebuild
+      --no-clean,
+      --incremental   remove nothing — compile on top of the existing out/
       --no-memguard   single attempt, no retry loop
       --no-publish    build only, don't touch $WEB_ROOT
-  -j N                override job count (default: \$(nproc) = $JOBS)
+  -j N                override job count (default: \$(nproc) = $JOBS, always
+                       passed through to the build — see note below)
   -h, --help          this help
 
 Build type is the first positional arg. If omitted you'll be prompted
 (default: $DEFAULT_BUILD_TYPE).
+
+Note: the build itself runs 'm bacon' directly rather than Axion's 'ax'
+wrapper. 'ax' runs an unconditional 'm installclean' on every invocation
+(no way to skip it) and its '-br' path silently drops '-j', so neither
+--no-clean nor -j could ever take effect through it.
 EOF
 }
 
@@ -112,7 +126,9 @@ while [[ $# -gt 0 ]]; do
         -f|--force) FORCE_RETRY=1; shift ;;
         --sepolicy) DO_SEPOLICY=1; shift ;;
         --sepolicy-only) DO_SEPOLICY=1; SEPOLICY_ONLY=1; shift ;;
-        --no-clean) DO_CLEAN=0; shift ;;
+        --clean) CLEAN_MODE="clean"; shift ;;
+        --installclean) CLEAN_MODE="installclean"; shift ;;
+        --no-clean|--incremental) CLEAN_MODE="none"; shift ;;
         --no-memguard) DO_MEMGUARD=0; shift ;;
         --no-publish) DO_PUBLISH=0; shift ;;
         -j)
@@ -263,16 +279,18 @@ run_sepolicy() {
 }
 
 # --------------------------------------------------------------------------
-# [BUILD] — one attempt. Cleans out/ only when $1 == clean.
+# [BUILD] — one attempt. $1 is the clean mode: clean | installclean | none.
 # --------------------------------------------------------------------------
 run_build_attempt() {
-    local clean_mode="$1"
+    local mode="$1"
 
-    if [[ "$clean_mode" == "clean" ]]; then
+    if [[ "$mode" == "clean" ]]; then
         log_tagged BUILD "rm -rf out/"
         rm -rf "$ROM_ROOT/out"
+    elif [[ "$mode" == "installclean" ]]; then
+        log_tagged BUILD "m installclean — installed images wiped, compiled objects kept"
     else
-        log_tagged BUILD "resuming — out/ left intact"
+        log_tagged BUILD "incremental — out/ left fully intact"
     fi
 
     (
@@ -282,11 +300,13 @@ run_build_attempt() {
         axion "$DEVICE" "$BUILD_TYPE" "$GMS_VARIANT" || exit 1
         # Deliberately NOT 'ax' — ax runs an unguarded 'm installclean'
         # (build/make/envsetup.sh:1398) on every invocation regardless of
-        # flags, which defeats --no-clean entirely, and its -br path
+        # flags, which defeated --no-clean entirely, and its -br path
         # silently drops -j (:1409 -> brunch -> breakfast ignores $3), so
-        # JOBS was never actually reaching the compiler either. axion
-        # (above) already did the lunch; m bacon is the same target
-        # ax -br ultimately reaches.
+        # JOBS was never actually honored either. axion (above) already did
+        # the lunch; m bacon is the same target ax -br ultimately reaches.
+        if [[ "$mode" == "installclean" ]]; then
+            m installclean || exit 1
+        fi
         m "-j$JOBS" bacon
     ) 2>&1 | tee -a "$BUILD_LOG"
     return "${PIPESTATUS[0]}"
@@ -393,8 +413,7 @@ fi
 
 start_ts=$(date +%s)
 attempt=1
-clean_mode="clean"
-[[ "$DO_CLEAN" -eq 0 ]] && clean_mode="resume"
+clean_mode="$CLEAN_MODE"
 
 while true; do
     if [[ "$DO_MEMGUARD" -eq 1 ]]; then
@@ -404,7 +423,7 @@ while true; do
     log_tagged BUILD "attempt $attempt — MemAvailable $(mem_available_gb)GB, SwapFree $(swap_free_gb)GB"
     run_build_attempt "$clean_mode"
     build_rc=$?
-    clean_mode="resume"   # never re-clean after attempt 1
+    clean_mode="none"   # a MEMGUARD retry must not re-clean or re-installclean
 
     if [[ $build_rc -eq 0 ]]; then
         log_tagged BUILD "succeeded on attempt $attempt."
