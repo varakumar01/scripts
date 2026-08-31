@@ -280,7 +280,14 @@ run_build_attempt() {
         # shellcheck disable=SC1091
         source build/envsetup.sh
         axion "$DEVICE" "$BUILD_TYPE" "$GMS_VARIANT" || exit 1
-        ax -br "-j$JOBS" "$BUILD_TYPE"
+        # Deliberately NOT 'ax' — ax runs an unguarded 'm installclean'
+        # (build/make/envsetup.sh:1398) on every invocation regardless of
+        # flags, which defeats --no-clean entirely, and its -br path
+        # silently drops -j (:1409 -> brunch -> breakfast ignores $3), so
+        # JOBS was never actually reaching the compiler either. axion
+        # (above) already did the lunch; m bacon is the same target
+        # ax -br ultimately reaches.
+        m "-j$JOBS" bacon
     ) 2>&1 | tee -a "$BUILD_LOG"
     return "${PIPESTATUS[0]}"
 }
