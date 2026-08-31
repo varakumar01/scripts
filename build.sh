@@ -2,13 +2,14 @@
 #
 # build.sh — AxionOS OP9 (lemonade) build + publish wrapper
 #
-# Drives the axion build (via 'axion' to lunch + 'm bacon' directly — NOT
-# 'ax', which unconditionally installcleans and drops -j; see run_build_attempt)
-# defined in this ROM tree's own build/envsetup.sh, retries automatically when
-# the remote build server kills the compile for memory pressure ([MEMGUARD]),
-# and publishes the finished zip to the web root ([PUBLISH]). OTA
-# (incremental / target_files) is intentionally never touched — only the
-# full zip is published.
+# Drives the axion build via Axion's own 'ax -br' wrapper, defined in this
+# ROM tree's own build/envsetup.sh. ax always runs an unconditional
+# 'm installclean' before building and its -br path silently drops the job
+# count — see the Note under --help for what that means for the clean/job
+# flags below. Retries automatically when the remote build server kills
+# the compile for memory pressure ([MEMGUARD]), and publishes the finished
+# zip to the web root ([PUBLISH]). OTA (incremental / target_files) is
+# intentionally never touched — only the full zip is published.
 #
 # This script must live at the ROM root on the build server (copy it there;
 # it is not itself part of the ROM tree). Run with --help for usage.
@@ -88,25 +89,30 @@ Usage: ./$SCRIPT_NAME [eng|userdebug|user] [options]
       --sepolicy      [SEPOLICY] run the sepolicy check before the full build
       --sepolicy-only [SEPOLICY] run only the sepolicy check, then exit
       --clean         'rm -rf out/' before building (default)
-      --installclean  'm installclean' before building — wipes installed
-                       images (\$OUT/system, /vendor, /product, target files)
-                       but keeps compiled objects; use when switching build
-                       variant (eng<->userdebug) without a full rebuild
+      --installclean  skip the 'rm -rf out/' (currently behaves the same
+                       as --no-clean — see note below)
       --no-clean,
-      --incremental   remove nothing — compile on top of the existing out/
+      --incremental   skip the 'rm -rf out/' — compile on top of out/
       --no-memguard   single attempt, no retry loop
       --no-publish    build only, don't touch $WEB_ROOT
-  -j N                override job count (default: \$(nproc) = $JOBS, always
-                       passed through to the build — see note below)
+  -j N                override job count (default: \$(nproc) = $JOBS — only
+                       reaches the --sepolicy path; see note below)
   -h, --help          this help
 
 Build type is the first positional arg. If omitted you'll be prompted
 (default: $DEFAULT_BUILD_TYPE).
 
-Note: the build itself runs 'm bacon' directly rather than Axion's 'ax'
-wrapper. 'ax' runs an unconditional 'm installclean' on every invocation
-(no way to skip it) and its '-br' path silently drops '-j', so neither
---no-clean nor -j could ever take effect through it.
+Note: the main build runs through Axion's 'ax -br' wrapper, not a direct
+'m bacon' call. ax always runs an unconditional 'm installclean'
+(build/make/envsetup.sh:1398) before building regardless of these flags,
+so --installclean and --no-clean/--incremental end up doing the same
+thing here — only --clean's extra 'rm -rf out/' makes a real difference.
+That installclean only touches the installed-image layer ($OUT/system,
+/vendor, /product, target files), not compiled objects, so the cost of
+going through ax is small. ax's -br path also silently drops the job
+count (brunch -> breakfast ignores it), so -j does NOT reach the main
+build's compiler — it's only honored by the --sepolicy path below, which
+calls 'm' directly.
 EOF
 }
 
@@ -280,6 +286,10 @@ run_sepolicy() {
 
 # --------------------------------------------------------------------------
 # [BUILD] — one attempt. $1 is the clean mode: clean | installclean | none.
+# installclean and none are the same disk operation here — ax forces its
+# own 'm installclean' unconditionally, so there's nothing extra for this
+# script to do for either; only clean's 'rm -rf out/' differs. See the
+# Note under --help.
 # --------------------------------------------------------------------------
 run_build_attempt() {
     local mode="$1"
@@ -287,10 +297,8 @@ run_build_attempt() {
     if [[ "$mode" == "clean" ]]; then
         log_tagged BUILD "rm -rf out/"
         rm -rf "$ROM_ROOT/out"
-    elif [[ "$mode" == "installclean" ]]; then
-        log_tagged BUILD "m installclean — installed images wiped, compiled objects kept"
     else
-        log_tagged BUILD "incremental — out/ left fully intact"
+        log_tagged BUILD "out/ left intact — ax will still run its own unconditional 'm installclean'"
     fi
 
     (
@@ -298,16 +306,7 @@ run_build_attempt() {
         # shellcheck disable=SC1091
         source build/envsetup.sh
         axion "$DEVICE" "$BUILD_TYPE" "$GMS_VARIANT" || exit 1
-        # Deliberately NOT 'ax' — ax runs an unguarded 'm installclean'
-        # (build/make/envsetup.sh:1398) on every invocation regardless of
-        # flags, which defeated --no-clean entirely, and its -br path
-        # silently drops -j (:1409 -> brunch -> breakfast ignores $3), so
-        # JOBS was never actually honored either. axion (above) already did
-        # the lunch; m bacon is the same target ax -br ultimately reaches.
-        if [[ "$mode" == "installclean" ]]; then
-            m installclean || exit 1
-        fi
-        m "-j$JOBS" bacon
+        ax -br "-j$JOBS" "$BUILD_TYPE"
     ) 2>&1 | tee -a "$BUILD_LOG"
     return "${PIPESTATUS[0]}"
 }
