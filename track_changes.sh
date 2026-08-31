@@ -225,6 +225,22 @@ take_snapshot() {
   progress_done
 }
 
+# Runs a command with output streaming live to the terminal/log AND captured
+# into the variable named by $1. The old 'out="$(repo sync ...)"' form
+# swallowed every byte until the command exited — a frozen screen for the
+# whole sync, with repo's own progress never appearing. The capture is still
+# needed because classify_sync_error() inspects the text afterwards.
+run_streamed() {
+  local __var="$1"; shift
+  local __tmp __rc
+  __tmp="$(mktemp)"
+  "$@" 2>&1 | tee "$__tmp"
+  __rc="${PIPESTATUS[0]}"
+  printf -v "$__var" '%s' "$(<"$__tmp")"
+  rm -f "$__tmp"
+  return "$__rc"
+}
+
 count_commits() {
   local path="$1" before="$2" after="$3" n
   n="$(git -C "$path" rev-list --count "${before}..${after}" 2>/dev/null)"
@@ -397,9 +413,8 @@ cmd_sync() {
     if [[ -n "$TARGET_REPO" ]]; then
       echo "${C_BOLD}==> Running: repo sync ${SYNC_ARGS[*]} ${TARGET_REPO}${C_RESET}"
       local sync_out
-      sync_out="$(repo sync "${SYNC_ARGS[@]}" "$TARGET_REPO" 2>&1)"
+      run_streamed sync_out repo sync "${SYNC_ARGS[@]}" "$TARGET_REPO"
       sync_rc=$?
-      printf '%s\n' "$sync_out"
       if [[ $sync_rc -ne 0 && "$FORCE" -eq 1 ]]; then
         local verdict
         verdict="$(classify_sync_error "$sync_out")"
@@ -409,21 +424,18 @@ cmd_sync() {
               # already tried --force-sync and it still failed — go straight to a full wipe
               clean_project "$TARGET_REPO"
               echo "${C_BOLD}==> retrying sync for ${TARGET_REPO}${C_RESET}"
-              sync_out="$(repo sync "${SYNC_ARGS[@]}" "$TARGET_REPO" 2>&1)"
+              run_streamed sync_out repo sync "${SYNC_ARGS[@]}" "$TARGET_REPO"
               sync_rc=$?
-              printf '%s\n' "$sync_out"
             else
               echo "${C_YELLOW}==> repo/revision mismatch confirmed — retrying with --force-sync first (less destructive than wiping)${C_RESET}"
-              sync_out="$(repo sync "${SYNC_ARGS[@]}" --force-sync "$TARGET_REPO" 2>&1)"
+              run_streamed sync_out repo sync "${SYNC_ARGS[@]}" --force-sync "$TARGET_REPO"
               sync_rc=$?
-              printf '%s\n' "$sync_out"
               if [[ $sync_rc -ne 0 ]]; then
                 echo "${C_YELLOW}==> --force-sync wasn't enough — falling back to a full wipe of ${TARGET_REPO}${C_RESET}"
                 clean_project "$TARGET_REPO"
                 echo "${C_BOLD}==> retrying sync for ${TARGET_REPO}${C_RESET}"
-                sync_out="$(repo sync "${SYNC_ARGS[@]}" "$TARGET_REPO" 2>&1)"
+                run_streamed sync_out repo sync "${SYNC_ARGS[@]}" "$TARGET_REPO"
                 sync_rc=$?
-                printf '%s\n' "$sync_out"
               fi
             fi
             ;;
@@ -438,9 +450,8 @@ cmd_sync() {
     else
       echo "${C_BOLD}==> Running: repo sync ${SYNC_ARGS[*]}${C_RESET}"
       local sync_out
-      sync_out="$(repo sync "${SYNC_ARGS[@]}" 2>&1)"
+      run_streamed sync_out repo sync "${SYNC_ARGS[@]}"
       sync_rc=$?
-      printf '%s\n' "$sync_out"
       if [[ $sync_rc -ne 0 && "$FORCE" -eq 1 ]]; then
         local verdict
         verdict="$(classify_sync_error "$sync_out")"
@@ -459,9 +470,8 @@ cmd_sync() {
           if [[ "${#failed_paths[@]}" -gt 0 ]]; then
             echo "${C_YELLOW}==> retrying with --force-sync for: ${failed_paths[*]}${C_RESET}"
             local retry_out
-            retry_out="$(repo sync "${SYNC_ARGS[@]}" --force-sync "${failed_paths[@]}" 2>&1)"
+            run_streamed retry_out repo sync "${SYNC_ARGS[@]}" --force-sync "${failed_paths[@]}"
             sync_rc=$?
-            printf '%s\n' "$retry_out"
             if [[ $sync_rc -ne 0 ]]; then
               echo "${C_YELLOW}==> --force-sync wasn't enough — falling back to a full wipe of: ${failed_paths[*]}${C_RESET}"
               for path in "${failed_paths[@]}"; do
@@ -485,9 +495,8 @@ cmd_sync() {
       echo "${C_BOLD}==> Running: git pull ${SYNC_ARGS[*]} (in ${TARGET_REPO})${C_RESET}"
       local origin_url pull_out
       origin_url="$(git -C "$TARGET_REPO" remote get-url origin 2>/dev/null)"
-      pull_out="$(git -C "$TARGET_REPO" pull "${SYNC_ARGS[@]}" 2>&1)"
+      run_streamed pull_out git -C "$TARGET_REPO" pull "${SYNC_ARGS[@]}"
       sync_rc=$?
-      printf '%s\n' "$pull_out"
       if [[ $sync_rc -ne 0 && "$FORCE" -eq 1 ]]; then
         local verdict
         verdict="$(classify_sync_error "$pull_out")"
