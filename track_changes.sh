@@ -24,6 +24,7 @@ LOG_DIR="./repo-sync-logs"
 TS="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="${LOG_DIR}/sync_${TS}.log"
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 
 if [[ -t 1 ]]; then
   C_GREEN=$'\e[32m'; C_YELLOW=$'\e[33m'; C_RED=$'\e[31m'; C_CYAN=$'\e[36m'
@@ -58,6 +59,12 @@ USAGE:
   ${SCRIPT_NAME} [command] [options]
 
 COMMANDS:
+  ${C_GREEN}--device${C_RESET} <name>
+        Symlink .repo/local_manifests/local_manifest.xml to
+        ${SCRIPT_DIR}/local_manifests/<name>.xml, then continue with
+        whatever command follows (or just switch, if none does). Run
+        from the ROM root (needs .repo/).
+
   ${C_GREEN}-s, --sync${C_RESET} [repo] [-f|--force] [-- <extra 'repo sync'/'git pull' args>]
         With no [repo]: sync every project, then report which repos
         changed and how many commits landed in each. Shows a live
@@ -100,6 +107,8 @@ COMMANDS:
         Show a short usage hint.
 
 EXAMPLES:
+  ${SCRIPT_NAME} --device lemonade -s
+  ${SCRIPT_NAME} --device lemonadep -s -f
   ${SCRIPT_NAME} --sync
   ${SCRIPT_NAME} --sync -- -j8 -c --force-sync
   ${SCRIPT_NAME} --sync device/oneplus/lemonade
@@ -860,9 +869,38 @@ cmd_list() {
 }
 
 # ---------------------------------------------------------------------
+# --device
+# ---------------------------------------------------------------------
+switch_manifest() {
+  local dev="$1" src="$SCRIPT_DIR/local_manifests/$1.xml"
+  [[ -f "$src" ]] || {
+    echo "${C_RED}no manifest for '$dev' — have: $(cd "$SCRIPT_DIR/local_manifests" && echo *.xml)${C_RESET}" >&2
+    exit 2
+  }
+  [[ -d .repo ]] || {
+    echo "${C_RED}not a repo tree (no .repo/ here) — run from the ROM root${C_RESET}" >&2
+    exit 2
+  }
+  mkdir -p .repo/local_manifests
+  local dest=".repo/local_manifests/local_manifest.xml"
+  if [[ -e "$dest" && ! -L "$dest" ]]; then
+    mv "$dest" "$dest.bak"
+    echo "${C_YELLOW}==> existing $dest was a regular file — saved as $dest.bak${C_RESET}"
+  fi
+  ln -sfn "$src" "$dest"
+  echo "${C_GREEN}==> local_manifest.xml -> $src${C_RESET}"
+}
+
+# ---------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------
 main() {
+  case "${1:-}" in
+    --device) switch_manifest "${2:?--device requires a name}"; shift 2 ;;
+    --device=*) switch_manifest "${1#--device=}"; shift ;;
+  esac
+  [[ $# -eq 0 ]] && exit 0
+
   local arg="${1:-}"
   case "$arg" in
     "")
