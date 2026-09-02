@@ -71,6 +71,7 @@ FORCE_RETRY=0
 DO_SEPOLICY=0
 SEPOLICY_ONLY=0
 CLEAN_MODE="clean"   # clean | installclean
+DO_CLEAN_SRC=0
 DO_MEMGUARD=1
 DO_PUBLISH=1
 BUILD_TYPE=""
@@ -85,8 +86,11 @@ Usage: ./$SCRIPT_NAME [eng|userdebug|user] [options]
   -f, --force         [MEMGUARD] retry on ANY failure, not just memory kills
       --sepolicy      [SEPOLICY] run the sepolicy check before the full build
       --sepolicy-only [SEPOLICY] run only the sepolicy check, then exit
-      --clean         'rm -rf out/' before building (default)
+  -c, --clean         'rm -rf out/' before building (default)
   -i, --installclean  skip the 'rm -rf out/'
+  -cs, --clean-src    'repo forall -c "git restore . && git clean -xdff"'
+                       across the whole source tree before building
+                       (DESTRUCTIVE — discards all uncommitted local changes)
   -m, --no-memguard   single attempt, no retry loop
       --no-publish    build only, don't touch $WEB_ROOT
   -j N                override job count (default: \$(nproc) = $JOBS)
@@ -113,8 +117,9 @@ while [[ $# -gt 0 ]]; do
         -f|--force) FORCE_RETRY=1; shift ;;
         --sepolicy) DO_SEPOLICY=1; shift ;;
         --sepolicy-only) DO_SEPOLICY=1; SEPOLICY_ONLY=1; shift ;;
-        --clean) CLEAN_MODE="clean"; shift ;;
+        -c|--clean) CLEAN_MODE="clean"; shift ;;
         -i|--installclean) CLEAN_MODE="installclean"; shift ;;
+        -cs|--clean-src) DO_CLEAN_SRC=1; shift ;;
         -m|--no-memguard) DO_MEMGUARD=0; shift ;;
         --no-publish) DO_PUBLISH=0; shift ;;
         -j)
@@ -265,6 +270,16 @@ run_sepolicy() {
 }
 
 # --------------------------------------------------------------------------
+# [CLEANSRC] — repo-wide source reset. Run at most once, before the retry
+# loop starts; a MEMGUARD retry must never re-wipe the source tree.
+# --------------------------------------------------------------------------
+clean_source() {
+    log_tagged CLEANSRC "repo forall -c 'git restore . && git clean -xdff' — discards ALL local changes"
+    ( cd "$ROM_ROOT" && repo forall -c 'git restore . 2>/dev/null; git clean -xdff' ) 2>&1 | tee -a "$BUILD_LOG"
+    return "${PIPESTATUS[0]}"
+}
+
+# --------------------------------------------------------------------------
 # [BUILD] — one attempt. $1 is the clean mode: clean | installclean.
 # --------------------------------------------------------------------------
 run_build_attempt() {
@@ -387,6 +402,14 @@ if [[ "$DO_SEPOLICY" -eq 1 ]]; then
         log "Aborting: sepolicy check failed, not starting the full build."
         exit $sepolicy_rc
     fi
+fi
+
+if [[ "$DO_CLEAN_SRC" -eq 1 ]]; then
+    if ! command -v repo >/dev/null 2>&1 || [[ ! -d "$ROM_ROOT/.repo" ]]; then
+        log "Error: --clean-src requires a 'repo' checkout (.repo/ not found or 'repo' not on PATH)."
+        exit 1
+    fi
+    clean_source || { log "CLEANSRC failed; aborting."; exit 1; }
 fi
 
 start_ts=$(date +%s)
