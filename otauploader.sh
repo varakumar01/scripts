@@ -15,7 +15,7 @@ SF_HOST="frs.sourceforge.net"
 SF_BASE="/home/frs/project/Axion-os/lemonade"
 DEVICE="lemonade"
 IMAGES=(boot.img vendor_boot.img vbmeta.img dtbo.img vendor_dlkm.img super_empty.img)
-FIRMWARE_SRC="$(dirname "$(readlink -f "$0")")/scripts/firmware"
+FIRMWARE_SRC="$(dirname "$(readlink -f "$0")")/firmware"
 
 AUTO=0
 DRY_RUN=0
