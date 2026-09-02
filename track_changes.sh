@@ -239,11 +239,22 @@ take_snapshot() {
 # swallowed every byte until the command exited — a frozen screen for the
 # whole sync, with repo's own progress never appearing. The capture is still
 # needed because classify_sync_error() inspects the text afterwards.
+#
+# 'repo sync's own progress bar (and git's) is gated on isatty(stdout) —
+# piping into tee (below) makes stdout a pipe, so real output went blank
+# until the command finished. 'script' gives the child a real pty so its
+# progress renders as if run interactively; that pty output is what gets
+# piped into tee.
 run_streamed() {
   local __var="$1"; shift
-  local __tmp __rc
+  local __tmp __rc __cmd
   __tmp="$(mktemp)"
-  "$@" 2>&1 | tee "$__tmp"
+  if command -v script >/dev/null 2>&1; then
+    __cmd="$(printf '%q ' "$@")"
+    script -qec "$__cmd" /dev/null 2>&1 | tee "$__tmp"
+  else
+    "$@" 2>&1 | tee "$__tmp"
+  fi
   __rc="${PIPESTATUS[0]}"
   printf -v "$__var" '%s' "$(<"$__tmp")"
   rm -f "$__tmp"
