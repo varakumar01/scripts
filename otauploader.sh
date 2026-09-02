@@ -1,33 +1,38 @@
 #!/usr/bin/env bash
-# otauploader.sh — push a finished AxionOS lemonade build + recovery images to
-# SourceForge over sftp. Run from the build root (the dir containing `out/`).
+# otauploader.sh — push a finished AxionOS build + recovery images to
+# SourceForge over sftp, then publish its Updater-app OTA manifest to the
+# varakumar01/scripts repo. Run from the build root (the dir containing `out/`).
 #
 # Usage:
-#   ./otauploader.sh              # fetch, show summary, ask before uploading
-#   ./otauploader.sh -au          # same, but skip the summary prompt
-#                                  #   (a brand-new version folder still prompts)
-#   ./otauploader.sh --dry-run    # parse + build the upload batch, print it,
-#                                  #   never connect to SourceForge
+#   ./otauploader.sh                    # fetch, show summary, ask before uploading
+#   ./otauploader.sh --device lemonadep # same, for a different device
+#   ./otauploader.sh -au                # same, but skip the summary prompt
+#                                        #   (a brand-new version folder still prompts)
+#   ./otauploader.sh --dry-run          # parse + build the upload batch and the
+#                                        #   OTA manifest, print both, never connect
 set -euo pipefail
 
 SF_USER="varakumar01"
 SF_HOST="frs.sourceforge.net"
-SF_BASE="/home/frs/project/Axion-os/lemonade"
+SF_PROJECT="axion-os"   # SourceForge unix name -- lowercase, frs SFTP paths are case-sensitive
 DEVICE="lemonade"
 IMAGES=(boot.img vendor_boot.img vbmeta.img dtbo.img vendor_dlkm.img super_empty.img)
-FIRMWARE_SRC="$(dirname "$(readlink -f "$0")")/firmware"
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+FIRMWARE_SRC="$SCRIPT_DIR/firmware"
 
 AUTO=0
 DRY_RUN=0
-for arg in "$@"; do
-    case "$arg" in
-        --auto-upload|-au) AUTO=1 ;;
-        --dry-run) DRY_RUN=1 ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --auto-upload|-au) AUTO=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --device) DEVICE="$2"; shift 2 ;;
         --help|-h)
-            sed -n '2,10p' "$0"; exit 0 ;;
-        *) echo "unknown argument: $arg" >&2; exit 1 ;;
+            sed -n '2,13p' "$0"; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+SF_BASE="/home/frs/project/$SF_PROJECT/$DEVICE"
 
 abort() { echo "error: $*" >&2; exit 1; }
 
@@ -97,6 +102,23 @@ trap 'rm -f "$BATCH"; unset SSHPASS' EXIT
     done
 } > "$BATCH"
 
+# --- 5b. build the OTA manifest (Updater app JSON) ---------------------------
+# generate_json.sh (vendor/lineage/build/tools) already wrote a correct
+# manifest next to the zip at build time -- everything in it is right except
+# "url", which points at cdn.axionos.org. Rewrite just that field rather than
+# regenerating the rest.
+case "$base" in *-VANILLA-*) FLAVOR=VANILLA ;; *) FLAVOR=GMS ;; esac
+SRC_JSON="out/target/product/$DEVICE/$FLAVOR/$DEVICE.json"
+DL_URL="https://downloads.sourceforge.net/project/$SF_PROJECT/$DEVICE/$verdir/$base"
+OUT_JSON="$SCRIPT_DIR/OTA/$FLAVOR/$DEVICE.json"
+
+MANIFEST=""
+if [[ -f "$SRC_JSON" ]]; then
+    MANIFEST=$(sed 's|"url": ".*"|"url": "'"$DL_URL"'"|' "$SRC_JSON")
+else
+    echo "warning: $SRC_JSON not found — skipping OTA manifest publish (was this built with 'm bacon'?)" >&2
+fi
+
 # --- 6. summary / confirmation ----------------------------------------------
 total_bytes=0
 for f in "${LOCAL_FILES[@]}"; do total_bytes=$(( total_bytes + $(stat -c%s "$f") )); done
@@ -134,6 +156,11 @@ echo
 if [[ $DRY_RUN -eq 1 ]]; then
     echo "--dry-run: sftp batch that would run:"
     cat "$BATCH"
+    if [[ -n "$MANIFEST" ]]; then
+        echo
+        echo "--dry-run: OTA manifest that would be published to $OUT_JSON:"
+        echo "$MANIFEST"
+    fi
     exit 0
 fi
 
@@ -146,3 +173,20 @@ fi
 echo "uploading..."
 sshpass -e sftp -o BatchMode=no -b "$BATCH" "$SF_USER@$SF_HOST"
 echo "done."
+
+# --- 8. publish the OTA manifest ---------------------------------------------
+# Non-fatal: the build server may not hold a push credential for this repo,
+# and a 2GB upload that just succeeded shouldn't be reported as a failure
+# over a git push.
+if [[ -n "$MANIFEST" ]]; then
+    mkdir -p "$(dirname "$OUT_JSON")"
+    echo "$MANIFEST" > "$OUT_JSON"
+    if git -C "$SCRIPT_DIR" add "$OUT_JSON" &&
+       git -C "$SCRIPT_DIR" commit -q -m "OTA: $DEVICE $FLAVOR $ver ($date)" &&
+       git -C "$SCRIPT_DIR" push -q origin aox; then
+        echo "OTA manifest published: $OUT_JSON"
+    else
+        echo "warning: could not commit/push $OUT_JSON — publish it manually:" >&2
+        echo "  git -C \"$SCRIPT_DIR\" add \"$OUT_JSON\" && git -C \"$SCRIPT_DIR\" commit -m 'OTA: $DEVICE $FLAVOR $ver ($date)' && git -C \"$SCRIPT_DIR\" push origin aox" >&2
+    fi
+fi
