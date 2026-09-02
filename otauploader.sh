@@ -8,8 +8,8 @@
 # sftp call via OpenSSH ControlMaster — sshpass is optional, not required.
 #
 # Usage:
-#   ./otauploader.sh                    # fetch, show summary, ask before uploading
-#   ./otauploader.sh --device lemonadep # same, for a different device
+#   ./otauploader.sh                    # autodetect device from out/, show summary, ask before uploading
+#   ./otauploader.sh --device lemonadep # override autodetection for a specific device
 #   ./otauploader.sh -au                # same, but skip the summary prompt
 #                                        #   (a brand-new version folder still prompts)
 #   ./otauploader.sh --dry-run          # parse + build the upload batch and the
@@ -19,7 +19,7 @@ set -euo pipefail
 SF_USER="varakumar01"
 SF_HOST="frs.sourceforge.net"
 SF_PROJECT="axion-os"   # SourceForge unix name -- lowercase, frs SFTP paths are case-sensitive
-DEVICE="lemonade"
+DEVICE=""   # empty = autodetect from out/target/product/*/ below
 IMAGES=(boot.img vendor_boot.img vbmeta.img dtbo.img vendor_dlkm.img super_empty.img)
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 FIRMWARE_SRC="$SCRIPT_DIR/firmware"
@@ -36,9 +36,18 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
-SF_BASE="/home/frs/project/$SF_PROJECT/$DEVICE"
 
 abort() { echo "error: $*" >&2; exit 1; }
+
+if [[ -z $DEVICE ]]; then
+    newest=$(find out/target/product -mindepth 2 -maxdepth 2 -type f \
+               -name 'axion-*.zip' ! -name '*INCREMENTAL*' ! -name '*target_files*' \
+               -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    [[ -n $newest ]] || abort "no axion-*.zip found under out/target/product/*/ — pass --device"
+    DEVICE=$(basename "$(dirname "$newest")")
+    echo "device: $DEVICE (autodetected from $(basename "$newest"))"
+fi
+SF_BASE="/home/frs/project/$SF_PROJECT/$DEVICE"
 
 [[ -d out/target/product/$DEVICE ]] || abort "out/target/product/$DEVICE not found — run this from the build root"
 
