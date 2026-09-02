@@ -3,6 +3,10 @@
 # SourceForge over sftp, then publish its Updater-app OTA manifest to the
 # varakumar01/scripts repo. Run from the build root (the dir containing `out/`).
 #
+# One SSH connection is authenticated (via sshpass, if installed and $SSHPASS
+# is set, else ssh's own interactive password prompt) and reused for every
+# sftp call via OpenSSH ControlMaster — sshpass is optional, not required.
+#
 # Usage:
 #   ./otauploader.sh                    # fetch, show summary, ask before uploading
 #   ./otauploader.sh --device lemonadep # same, for a different device
@@ -28,7 +32,7 @@ while [[ $# -gt 0 ]]; do
         --dry-run) DRY_RUN=1; shift ;;
         --device) DEVICE="$2"; shift 2 ;;
         --help|-h)
-            sed -n '2,13p' "$0"; exit 0 ;;
+            sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -37,6 +41,31 @@ SF_BASE="/home/frs/project/$SF_PROJECT/$DEVICE"
 abort() { echo "error: $*" >&2; exit 1; }
 
 [[ -d out/target/product/$DEVICE ]] || abort "out/target/product/$DEVICE not found — run this from the build root"
+
+# --- SSH connection: one authenticated session, reused by every sftp call --
+# below via OpenSSH's own ControlMaster multiplexing, so nothing here depends
+# on sshpass being installed. If SSHPASS is set and sshpass is available it
+# authenticates non-interactively (cron/build-automation use); otherwise
+# plain `ssh` prompts for the password on the tty itself, once, the same way
+# a manual `sftp user@host` would.
+SSH_CTL_DIR=$(mktemp -d)
+SSH_OPTS=(-o "ControlMaster=auto" -o "ControlPersist=60" -o "ControlPath=$SSH_CTL_DIR/ctl")
+
+cleanup() {
+    rm -f "${BATCH:-}"
+    ssh -O exit "${SSH_OPTS[@]}" "$SF_USER@$SF_HOST" 2>/dev/null || true
+    rm -rf "$SSH_CTL_DIR"
+    unset SSHPASS
+}
+trap cleanup EXIT
+
+open_master() {
+    if command -v sshpass >/dev/null && [[ -n "${SSHPASS:-}" ]]; then
+        sshpass -e ssh "${SSH_OPTS[@]}" -fN "$SF_USER@$SF_HOST"
+    else
+        ssh "${SSH_OPTS[@]}" -fN "$SF_USER@$SF_HOST"
+    fi || abort "could not open SSH connection to $SF_HOST"
+}
 
 # --- 1. discover the ROM zip ------------------------------------------------
 ROM=$(find "out/target/product/$DEVICE" -maxdepth 1 -type f \
@@ -75,17 +104,13 @@ NEW_FOLDER=0
 if [[ $DRY_RUN -eq 1 ]]; then
     NEW_FOLDER=1   # can't know without connecting; assume worst case for the preview
 else
-    command -v sshpass >/dev/null || abort "sshpass not installed — install it, or fall back to plain sftp"
-    [[ -n "${SSHPASS:-}" ]] || { read -rs -p "SourceForge password for $SF_USER: " SSHPASS; echo; export SSHPASS; }
-    trap 'unset SSHPASS' EXIT
-
-    listing=$(sshpass -e sftp -o BatchMode=no -b <(echo "ls $SF_BASE") "$SF_USER@$SF_HOST" 2>/dev/null || true)
+    open_master
+    listing=$(sftp -o BatchMode=no "${SSH_OPTS[@]}" -b <(echo "ls $SF_BASE") "$SF_USER@$SF_HOST" 2>/dev/null || true)
     grep -q "$verdir\$\|$verdir/" <<<"$listing" || NEW_FOLDER=1
 fi
 
 # --- 5. build the sftp batch -------------------------------------------------
 BATCH=$(mktemp)
-trap 'rm -f "$BATCH"; unset SSHPASS' EXIT
 
 {
     echo "-mkdir $SF_BASE/$verdir"
@@ -114,7 +139,7 @@ OUT_JSON="$SCRIPT_DIR/OTA/$FLAVOR/$DEVICE.json"
 
 MANIFEST=""
 if [[ -f "$SRC_JSON" ]]; then
-    MANIFEST=$(sed 's|"url": ".*"|"url": "'"$DL_URL"'"|' "$SRC_JSON")
+    MANIFEST=$(sed 's|"url":[[:space:]]*".*"|"url": "'"$DL_URL"'"|' "$SRC_JSON")
 else
     echo "warning: $SRC_JSON not found — skipping OTA manifest publish (was this built with 'm bacon'?)" >&2
 fi
@@ -171,7 +196,7 @@ fi
 
 # --- 7. upload ----------------------------------------------------------------
 echo "uploading..."
-sshpass -e sftp -o BatchMode=no -b "$BATCH" "$SF_USER@$SF_HOST"
+sftp -o BatchMode=no "${SSH_OPTS[@]}" -b "$BATCH" "$SF_USER@$SF_HOST"
 echo "done."
 
 # --- 8. publish the OTA manifest ---------------------------------------------
