@@ -493,5 +493,8 @@ if [[ -n "$MANIFEST" ]]; then
     else
         echo "warning: could not commit/push $OUT_JSON — publish it manually:" >&2
         echo "  git -C \"$SCRIPT_DIR\" add \"$OUT_JSON\" && git -C \"$SCRIPT_DIR\" commit -m 'OTA: $DEVICE $FLAVOR $ver ($date)' && git -C \"$SCRIPT_DIR\" push origin aox" >&2
+        echo >&2
+        echo "$OUT_JSON contents (the build server has no GitHub push access -- copy this to your PC by hand):" >&2
+        cat "$OUT_JSON" >&2
     fi
 fi
