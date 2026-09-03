@@ -21,6 +21,9 @@
 #                                        #   (a brand-new version folder still prompts)
 #   ./otauploader.sh --dry-run          # parse + build the upload plan and the
 #                                        #   OTA manifest, print both, never connect
+#   ./otauploader.sh -pd ls [path]      # browse the pixeldrain filesystem read-only
+#                                        #   (path is relative to /me, default: root);
+#                                        #   pass a printed dir name back in to descend
 set -euo pipefail
 
 SF_USER="varakumar01"
@@ -40,24 +43,136 @@ AUTO=0
 DRY_RUN=0
 DO_SF=0
 DO_PD=0
+PD_LS=0
+PD_LS_PATH=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --auto-upload|-au) AUTO=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --device) DEVICE="$2"; shift 2 ;;
         --sourceforge|-sf) DO_SF=1; shift ;;
-        --pixeldrain|-pd) DO_PD=1; shift ;;
+        --pixeldrain|-pd)
+            if [[ "${2:-}" == "ls" ]]; then
+                PD_LS=1
+                if [[ -n "${3:-}" && "${3:0:1}" != "-" ]]; then
+                    PD_LS_PATH="$3"; shift 3
+                else
+                    shift 2
+                fi
+            else
+                DO_PD=1; shift
+            fi
+            ;;
         --help|-h)
-            sed -n '2,23p' "$0"; exit 0 ;;
+            sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
-(( DO_SF || DO_PD )) || DO_SF=1   # no target flag = today's default (SourceForge only)
+(( DO_SF || DO_PD || PD_LS )) || DO_SF=1   # no target flag = today's default (SourceForge only)
 
 abort() { echo "error: $*" >&2; exit 1; }
 
-if [[ $DO_PD -eq 1 && -z "${PIXELDRAIN_API_KEY:-}" ]]; then
+if [[ ( $DO_PD -eq 1 || $PD_LS -eq 1 ) && -z "${PIXELDRAIN_API_KEY:-}" ]]; then
     abort "--pixeldrain requires PIXELDRAIN_API_KEY in $SCRIPT_DIR/.env (see .env.example)"
+fi
+
+# pd <curl args...> -- authenticated pixeldrain API call. The key is piped in
+# via curl's -K config file (stdin) instead of a command-line arg so it never
+# shows up in `ps`.
+pd() {
+    printf 'user = ":%s"\n' "$PIXELDRAIN_API_KEY" | curl -sS --fail-with-body -K - "$@"
+}
+
+# urlenc <string> -- percent-encode one path component (no slashes in input).
+urlenc() {
+    local s="$1" out= c i
+    for (( i=0; i<${#s}; i++ )); do
+        c=${s:i:1}
+        case "$c" in
+            [a-zA-Z0-9.~_-]) out+="$c" ;;
+            *) out+=$(printf '%%%02X' "'$c") ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# pd_urlpath <a/b/c> -- percent-encode each "/"-separated component and
+# rejoin with "/", so the path structure survives while special characters
+# in individual names (spaces, parens, ...) don't break the URL.
+pd_urlpath() {
+    local IFS=/ seg out=()
+    for seg in $1; do out+=("$(urlenc "$seg")"); done
+    IFS=/; printf '%s' "${out[*]}"
+}
+
+# pd_ls <path> -- read-only directory browser for the pixeldrain filesystem.
+# Only ever issues a GET (via pd(), no -X). The public link for every entry
+# is derived purely from data the single ?stat call already returns: an
+# entry's own "id" field if it was shared directly, otherwise the nearest
+# already-shared ancestor's id plus the relative path down to the entry --
+# both already present in the stat response's path/children arrays. No
+# extra network calls, and nothing is ever shared as a side effect of
+# browsing.
+pd_ls() {
+    local path="${1:-}" api_path info PY
+    api_path="me${path:+/$path}"
+    if ! info=$(pd "$PD_API/filesystem/$(pd_urlpath "$api_path")?stat"); then
+        abort "pixeldrain: path not found: /$path"
+    fi
+    IFS= read -r -d '' PY <<'PYEOF' || true
+import json, sys
+from urllib.parse import quote
+
+def human(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n}B" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+
+d = json.load(sys.stdin)
+ancestors = d["path"]
+base_index = d["base_index"]
+here = ancestors[base_index]
+
+if here["type"] != "dir":
+    print(f"{here['path']}  ({human(here.get('file_size', 0))})")
+    sys.exit(0)
+
+# Nearest already-shared ancestor (skip index 0, the private "me" root --
+# its "id" is the literal string "me", not a usable public bucket id) plus
+# the path segments from that ancestor down to and including "here".
+share_id, prefix = None, []
+for node in ancestors[1:base_index + 1]:
+    nid = node.get("id")
+    if nid:
+        share_id, prefix = nid, []
+    else:
+        prefix.append(node["name"])
+
+def build_link(rel_parts):
+    if not share_id:
+        return None
+    tail = "/" + "/".join(quote(p) for p in rel_parts) if rel_parts else ""
+    return f"https://pixeldrain.com/api/filesystem/{share_id}{tail}"
+
+here_link = build_link(prefix)
+print(f"{here['path']}/" + (f"  id={share_id}  {here_link}" if here_link else "  (not shared)"))
+
+children = sorted(d.get("children", []), key=lambda c: (c["type"] != "dir", c["name"].lower()))
+for c in children:
+    kind = "dir " if c["type"] == "dir" else "file"
+    size = "" if c["type"] == "dir" else human(c.get("file_size", 0))
+    cid = c.get("id")
+    link = f"https://pixeldrain.com/api/filesystem/{cid}" if cid else build_link(prefix + [c["name"]])
+    tail = f"  id={cid}  {link}" if cid else (f"  {link}" if link else "  (not shared)")
+    print(f"  {kind}  {size:>8}  {c['name']}{tail}")
+PYEOF
+    python3 -c "$PY" <<<"$info"
+}
+
+if [[ $PD_LS -eq 1 ]]; then
+    pd_ls "$PD_LS_PATH"
+    exit 0
 fi
 
 if [[ -z $DEVICE ]]; then
@@ -96,35 +211,6 @@ open_master() {
     else
         ssh "${SSH_OPTS[@]}" -fN "$SF_USER@$SF_HOST"
     fi || abort "could not open SSH connection to $SF_HOST"
-}
-
-# pd <curl args...> -- authenticated pixeldrain API call. The key is piped in
-# via curl's -K config file (stdin) instead of a command-line arg so it never
-# shows up in `ps`.
-pd() {
-    printf 'user = ":%s"\n' "$PIXELDRAIN_API_KEY" | curl -sS --fail-with-body -K - "$@"
-}
-
-# urlenc <string> -- percent-encode one path component (no slashes in input).
-urlenc() {
-    local s="$1" out= c i
-    for (( i=0; i<${#s}; i++ )); do
-        c=${s:i:1}
-        case "$c" in
-            [a-zA-Z0-9.~_-]) out+="$c" ;;
-            *) out+=$(printf '%%%02X' "'$c") ;;
-        esac
-    done
-    printf '%s' "$out"
-}
-
-# pd_urlpath <a/b/c> -- percent-encode each "/"-separated component and
-# rejoin with "/", so the path structure survives while special characters
-# in individual names (spaces, parens, ...) don't break the URL.
-pd_urlpath() {
-    local IFS=/ seg out=()
-    for seg in $1; do out+=("$(urlenc "$seg")"); done
-    IFS=/; printf '%s' "${out[*]}"
 }
 
 # --- 1. discover the ROM zip ------------------------------------------------
