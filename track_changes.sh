@@ -65,6 +65,12 @@ COMMANDS:
         whatever command follows (or just switch, if none does). Run
         from the ROM root (needs .repo/).
 
+  ${C_GREEN}-cs, --clean-src${C_RESET}
+        'git restore . && git clean -xdff' across every discovered
+        project, then continue with whatever command follows (or just
+        clean, if none does). DESTRUCTIVE — discards all uncommitted
+        local changes tree-wide.
+
   ${C_GREEN}-s, --sync${C_RESET} [repo] [-f|--force] [-- <extra 'repo sync'/'git pull' args>]
         With no [repo]: sync every project, then report which repos
         changed and how many commits landed in each. Shows a live
@@ -109,6 +115,7 @@ COMMANDS:
 EXAMPLES:
   ${SCRIPT_NAME} --device lemonade -s
   ${SCRIPT_NAME} --device lemonadep -s -f
+  ${SCRIPT_NAME} -cs -s
   ${SCRIPT_NAME} --sync
   ${SCRIPT_NAME} --sync -- -j8 -c --force-sync
   ${SCRIPT_NAME} --sync device/oneplus/lemonade
@@ -282,6 +289,29 @@ count_commits() {
   removed="${counts%%[[:space:]]*}"
   added="${counts##*[[:space:]]}"
   echo "+${added} -${removed}"
+}
+
+# [CLEANSRC] — repo-wide source reset: 'git restore . && git clean -xdff'
+# in every discovered project. DESTRUCTIVE — discards all uncommitted local
+# changes tree-wide. Works in both repo-tool and plain-git-forest mode via
+# discover_repos()/REPO_PATHS, same as everything else in this script.
+cmd_clean_src() {
+  discover_repos
+  local total=${#REPO_PATHS[@]}
+  if [[ "$total" -eq 0 ]]; then
+    echo "${C_RED}error: no repositories found (looked for .repo/ or nested .git/ dirs)${C_RESET}"
+    return 2
+  fi
+  echo "${C_YELLOW}==> clean-src: 'git restore . && git clean -xdff' across ${total} repositories — discards ALL local changes${C_RESET}"
+  local i=0
+  for path in "${REPO_PATHS[@]}"; do
+    i=$((i + 1))
+    progress "$i" "$total" "$path"
+    git -C "$path" restore . 2>/dev/null
+    git -C "$path" clean -xdff -q
+  done
+  progress_done
+  echo "${C_GREEN}==> clean-src done.${C_RESET}"
 }
 
 # wipes the local working copy AND the repo-tool internal object dirs
@@ -909,6 +939,7 @@ main() {
   case "${1:-}" in
     --device) switch_manifest "${2:?--device requires a name}"; shift 2 ;;
     --device=*) switch_manifest "${1#--device=}"; shift ;;
+    -cs|--clean-src|--cleansource) cmd_clean_src; shift ;;
   esac
   [[ $# -eq 0 ]] && exit 0
 
