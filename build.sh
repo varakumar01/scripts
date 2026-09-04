@@ -82,6 +82,7 @@ usage() {
     cat <<EOF
 Usage: ./$SCRIPT_NAME [eng|userdebug|user] [options]
 
+  -d, --device NAME   target device (default: $DEVICE), e.g. lemonade, lemonadep
   -f, --force         [MEMGUARD] retry on ANY failure, not just memory kills
       --sepolicy      [SEPOLICY] run the sepolicy check before the full build
       --sepolicy-only [SEPOLICY] run only the sepolicy check, then exit
@@ -109,6 +110,14 @@ while [[ $# -gt 0 ]]; do
             fi
             BUILD_TYPE="$1"
             shift
+            ;;
+        -d|--device)
+            DEVICE="$2"
+            if [[ -z "$DEVICE" ]]; then
+                log "Error: -d/--device requires a name."
+                exit 1
+            fi
+            shift 2
             ;;
         -f|--force) FORCE_RETRY=1; shift ;;
         --sepolicy) DO_SEPOLICY=1; shift ;;
