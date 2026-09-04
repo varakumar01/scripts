@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+<!-- leomandne trees -->
+<project name="varakumar01/Levion_kernel_OP9" path="kernel/oneplus/sm8350" revision="claude-ksu" remote="github" />
+<project name="varakumar01/android_device_oneplus_lemonadep" path="device/oneplus/lemonadep" revision="claude" remote="github" />
+<project name="varakumar01/android_device_oneplus_sm8350-common" path="device/oneplus/sm8350-common" revision="claude" remote="github" />
+<project name="varakumar01/android_hardware_oplus" path="hardware/oplus" revision="claude" remote="github" />
+<project name="varakumar01/proprietary_vendor_oneplus_lemonadep" path="vendor/oneplus/lemonadep" revision="claude" remote="github" />
+<project name="varakumar01/proprietary_vendor_oneplus_sm8350-common" path="vendor/oneplus/sm8350-common" revision="claude" remote="github" />
+<project name="Jammy555/vendor_oneplus_dolby" path="vendor/sony/dolby" revision="D2" remote="github" />
+<project name="LineageOS/android_hardware_pixelworks_interfaces" path="hardware/pixelworks/interfaces" revision="lineage-23.2" remote="github" />
+
+<!-- codesgning-->
+<project name="varakumar01/vendor_aox-priv_keys-template" path="vendor/lineage-priv/keys" revision="aox" remote="github" />
+
+<project name="varakumar01/scripts" path="scripts" revision="aox" remote="github">
+<linkfile src="build.sh" dest="build.sh" />
+<linkfile src="track_changes.sh" dest="track_changes.sh" />
+<linkfile src="otauploader.sh" dest="otauploader.sh" />
+</project>
+
+</manifest>
