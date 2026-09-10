@@ -1,0 +1,57 @@
+AxionOS — OnePlus 9 (lemonade)
+================================
+
+Levion Kernel:
+- Multi-Gen LRU (MGLRU) backported and enabled by default, with a runtime
+  on/off switch at /sys/kernel/mm/lru_gen/enabled for A/B testing
+- CASS (Capacity Aware Superset Scheduler) running alongside WALT
+- KernelSU-Next v3.2.0 + SUSFS v2.2.0 built in
+- UFS Host Performance Booster (UFSHPB) enabled — upstream reports
+  sequential writes improving 490MB/s -> 515MB/s
+- Default cpufreq governor switched from "performance" to "schedutil"
+- Faster thermal (LMH) and devfreq polling, moved to high-priority/
+  non-deferrable work so throttling reacts quicker under load
+- Energy model re-tuned for the lahaina DTS from real freqbench data
+- Westwood/H-TCP/Vegas TCP congestion control, mq-deadline + Kyber I/O
+  schedulers built in
+- 250Hz timer, noatime by default
+- Fixed AMOLED (amb655x) ESD detection — panel damage/burn-in recovery
+  was silently broken
+- Fixed a composer service crash (SIGSEGV) on boot from a bad panel node
+- Fixed the charger driver leaking a resource on every poll cycle
+
+Included OnePlus Camera (OOSCam):
+- The full stock OxygenOS camera app, shipped alongside Aperture
+  (Credits: Jammy555)
+
+DeviceSettings app:
+- Kernel Manager: governor-driven Performance profile picker
+- Selective Band Lock — pick exact LTE/5G bands per SIM
+- Powertools: KProfiles integration, sysfs IO tuning, TCP congestion
+  control switch
+
+Camera / Media:
+- 8K video recording on the main camera (HEVC, raised bitrate ceilings)
+- Fixed CamcorderProfiles for the mono/telephoto camera
+
+Other:
+- Advanced Reboot menu enabled by default
+- Self-hosted OTA updater (no more relying on third-party mirrors)
+- Switched to Sony Dolby Atmos audio
+- VoLTE/VoWiFi unlocked for more carriers
+
+BugFixes:
+- Fixed a display break-loop caused by a broken SDM PictureAdjustment path
+- Fixed PowerHAL crashing on boot from a duplicate powerhint.json entry
+- Fixed the Updater app crashing or getting stuck on a null/stale download
+- Fixed battery design-capacity reporting (was silently reading the wrong type)
+- Fixed WiFi tombstone/crash-report access
+- Fixed mic issues in apps like WhatsApp
+- Fixed a dozen+ SELinux denials blocking system_app, rild, zygote, vendor_init
+  and other core services
+
+Credits:
+- Jammy555 — the bulk of the device-tree, vendor, and hardware work this
+  ROM is built on, plus the stock OOSCam packaging
+- crDroid (crdroidandroid) — the Levion kernel's OnePlus 9 (lemonade) base
+- @meowcat902 — testing on OnePlus 9
