@@ -341,18 +341,18 @@ publish_zip() {
         return 1
     fi
 
-    # AxionOS bakes the date into the zip name, so a second build the same
-    # day produces the exact same filename. Never overwrite a previous
-    # build: the first one of the day keeps the bare name, every one after
-    # it gets -2, -3, ... appended to the stem until a free name is found.
-    local stem="${name%.zip}" final_name="$name" n=2
-    while [[ -e "$WEB_ROOT/$final_name" ]]; do
+    # AxionOS bakes the date into the zip name, so multiple builds the same
+    # day produce the exact same filename. Every build gets a -N suffix
+    # (starting at -1, never bare) so same-day builds are unambiguous at a
+    # glance, and an existing file is never overwritten -- just pick the
+    # first free number.
+    local stem="${name%.zip}" final_name n=1
+    while :; do
         final_name="${stem}-${n}.zip"
+        [[ -e "$WEB_ROOT/$final_name" ]] || break
         n=$(( n + 1 ))
     done
-    if [[ "$final_name" != "$name" ]]; then
-        log_tagged PUBLISH "$name already exists in $WEB_ROOT — saving this build as $final_name instead"
-    fi
+    log_tagged PUBLISH "saving this build as $final_name"
 
     log_tagged PUBLISH "copying $final_name into $WEB_ROOT/ ..."
     cp "$zip" "$WEB_ROOT/${final_name}.part"
