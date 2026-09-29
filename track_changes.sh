@@ -10,6 +10,7 @@
 #   ./reposcan.sh                          -> short usage hint
 #   ./reposcan.sh --help                   -> full help
 #   ./reposcan.sh --sync [repo] [-f] [-- <args>]
+#   ./reposcan.sh -dts                     -> sync only local_manifest.xml's own projects
 #   ./reposcan.sh -t7 | -t7-9 [-v]          -> commit activity, no sync
 #   ./reposcan.sh --date 10/08/26[-DD/MM/YY] [-v]
 #   ./reposcan.sh --report [N|list]        -> view a saved sync log
@@ -86,6 +87,16 @@ COMMANDS:
         local changes in the wiped project(s) are lost — so it's only
         ever done when you explicitly pass -f.
 
+  ${C_GREEN}-dts, --dts${C_RESET}
+        Sync ONLY the projects declared in
+        .repo/local_manifests/local_manifest.xml (every <project
+        path="..."> in that file) instead of a full 'repo sync' — i.e.
+        just this ROM's own device/vendor/kernel/scripts overlay repos,
+        not the thousands of stock platform projects underneath. Prints
+        the same before/after change report as --sync, scoped to those
+        projects. Needs .repo/local_manifests/local_manifest.xml to
+        exist (see --device above) and must be run from the ROM root.
+
   ${C_GREEN}-t<N>${C_RESET} [-v]            e.g. -t7    -> commits in the last 7 days
   ${C_GREEN}-t<N>-<M>${C_RESET} [-v]        e.g. -t7-9  -> commits from 9 days ago to 7 days ago
   ${C_GREEN}-d, --date <DD/MM/YY>${C_RESET} [-v]             e.g. --date 10/08/26         (that date -> now)
@@ -120,6 +131,7 @@ EXAMPLES:
   ${SCRIPT_NAME} --sync -- -j8 -c --force-sync
   ${SCRIPT_NAME} --sync device/oneplus/lemonade
   ${SCRIPT_NAME} --sync hardware/oplus -f
+  ${SCRIPT_NAME} -dts
   ${SCRIPT_NAME} -t7
   ${SCRIPT_NAME} -t7-9
   ${SCRIPT_NAME} -t7 -v
@@ -910,6 +922,134 @@ cmd_list() {
 }
 
 # ---------------------------------------------------------------------
+# -dts / --dts  (sync only local_manifest.xml's own projects)
+# ---------------------------------------------------------------------
+
+# Parses every <project ... path="..."> attribute out of
+# .repo/local_manifests/local_manifest.xml — the file --device symlinks.
+# These are exactly this ROM's own device/vendor/kernel/scripts overlay
+# repos, as opposed to the thousands of stock platform projects a full
+# 'repo sync' would otherwise also touch.
+parse_local_manifest_paths() {
+  local manifest=".repo/local_manifests/local_manifest.xml"
+  [[ -f "$manifest" ]] || {
+    echo "${C_RED}no .repo/local_manifests/local_manifest.xml — run '${SCRIPT_NAME} --device <name>' first, or run from the ROM root${C_RESET}" >&2
+    return 1
+  }
+  grep -oE '<project[^>]*\bpath="[^"]+"' "$manifest" | sed -E 's/.*path="([^"]+)".*/\1/'
+}
+
+cmd_sync_dts() {
+  [[ -d .repo ]] || {
+    echo "${C_RED}not a repo tree (no .repo/ here) — run from the ROM root${C_RESET}"
+    return 2
+  }
+
+  # command substitution (not process substitution) so a failure inside
+  # parse_local_manifest_paths (missing manifest) actually propagates here —
+  # 'while read ... < <(fn)' would silently see zero lines and keep going
+  # even when fn itself failed, since the loop's own exit status only
+  # reflects the last read, never the producer's.
+  local dts_output
+  dts_output="$(parse_local_manifest_paths)" || return 1
+
+  local -a DTS_PATHS=()
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && DTS_PATHS+=("$p")
+  done <<< "$dts_output"
+  if [[ "${#DTS_PATHS[@]}" -eq 0 ]]; then
+    echo "${C_RED}no <project path=\"...\"> entries found in local_manifest.xml${C_RESET}"
+    return 2
+  fi
+
+  mkdir -p "$LOG_DIR"
+  exec > >(tee -a "$LOG_FILE") 2>&1
+
+  discover_repos   # populates REPO_NAMES for every project repo knows about
+  REPO_PATHS=("${DTS_PATHS[@]}")   # scope down to just the manifest's own projects
+
+  echo "${C_BOLD}==> device-tree sync: ${#REPO_PATHS[@]} project(s) from local_manifest.xml${C_RESET}"
+  local p
+  for p in "${REPO_PATHS[@]}"; do
+    echo "    $p  (${REPO_NAMES[$p]:--})"
+  done
+
+  local BEFORE_SNAPSHOT AFTER_SNAPSHOT
+  BEFORE_SNAPSHOT="$(mktemp)"
+  AFTER_SNAPSHOT="$(mktemp)"
+  echo "${C_BOLD}==> Snapshotting current HEADs (pre-sync)...${C_RESET}"
+  take_snapshot "$BEFORE_SNAPSHOT"
+
+  echo "${C_BOLD}==> Running: repo sync ${REPO_PATHS[*]}${C_RESET}"
+  local sync_out sync_rc
+  run_streamed sync_out repo sync "${REPO_PATHS[@]}"
+  sync_rc=$?
+  if [[ "$sync_rc" -ne 0 ]]; then
+    echo "${C_RED}sync failed — see ${LOG_FILE}${C_RESET}"
+    rm -f "$BEFORE_SNAPSHOT" "$AFTER_SNAPSHOT"
+    return 1
+  fi
+
+  echo "${C_BOLD}==> Snapshotting HEADs (post-sync)...${C_RESET}"
+  take_snapshot "$AFTER_SNAPSHOT"
+
+  declare -A BEFORE_MAP AFTER_MAP CHANGED_SUMMARY
+  while IFS=$'\t' read -r path sha; do
+    [[ -n "$path" ]] && BEFORE_MAP["$path"]="$sha"
+  done < "$BEFORE_SNAPSHOT"
+  while IFS=$'\t' read -r path sha; do
+    [[ -n "$path" ]] && AFTER_MAP["$path"]="$sha"
+  done < "$AFTER_SNAPSHOT"
+  rm -f "$BEFORE_SNAPSHOT" "$AFTER_SNAPSHOT"
+
+  local changed_count=0
+  local commits_added_total=0 commits_removed_total=0
+
+  echo ""
+  echo "===================================================================="
+  echo " device-tree sync change report — $(date)"
+  echo "===================================================================="
+
+  for path in "${REPO_PATHS[@]}"; do
+    local before_sha="${BEFORE_MAP[$path]:-}" after_sha="${AFTER_MAP[$path]:-}"
+    if [[ "$before_sha" != "$after_sha" ]]; then
+      changed_count=$((changed_count + 1))
+      print_change_details "$path" "$before_sha" "$after_sha"
+      local commits
+      commits="$(count_commits "$path" "$before_sha" "$after_sha")"
+      CHANGED_SUMMARY["$path"]="$commits"
+      if [[ "$commits" =~ ^\+([0-9]+)\ -([0-9]+)$ ]]; then
+        commits_added_total=$((commits_added_total + BASH_REMATCH[1]))
+        commits_removed_total=$((commits_removed_total + BASH_REMATCH[2]))
+      fi
+    fi
+  done
+
+  echo ""
+  echo "--------------------------------------------------------------------"
+  if [[ "$changed_count" -eq 0 ]]; then
+    echo "No project changes — device tree repos were already up to date."
+  else
+    echo "Projects changed: $changed_count   commits: +${commits_added_total} -${commits_removed_total}"
+  fi
+  echo "--------------------------------------------------------------------"
+
+  echo ""
+  echo "${C_BOLD}==> Sync summary${C_RESET}"
+  if [[ "$changed_count" -eq 0 ]]; then
+    echo "  (nothing changed)"
+  else
+    printf '  %-40s %-45s %s\n' "PATH" "PROJECT" "COMMITS"
+    for path in "${!CHANGED_SUMMARY[@]}"; do
+      printf '  %-40s %-45s %s\n' "$path" "$(project_name_for "$path")" "${CHANGED_SUMMARY[$path]}"
+    done | sort
+  fi
+
+  echo ""
+  echo "${C_BOLD}Full log saved to:${C_RESET} $LOG_FILE"
+}
+
+# ---------------------------------------------------------------------
 # --device
 # ---------------------------------------------------------------------
 switch_manifest() {
@@ -957,6 +1097,9 @@ main() {
       ;;
     -l|--list)
       cmd_list
+      ;;
+    -dts|--dts)
+      cmd_sync_dts
       ;;
     -r|--report)
       shift
