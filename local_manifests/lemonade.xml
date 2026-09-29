@@ -8,7 +8,7 @@
 <project name="varakumar01/proprietary_vendor_oneplus_lemonade" path="vendor/oneplus/lemonade" revision="aox" remote="github" />
 <project name="varakumar01/proprietary_vendor_oneplus_sm8350-common" path="vendor/oneplus/sm8350-common" revision="aox" remote="github" />
 <project name="Jammy555/vendor_oneplus_dolby" path="vendor/sony/dolby" revision="D2" remote="github" />
-<project name="Jammy555/vendor_oplus_camera" path="vendor/oplus/camera" revision="16" remote="github" />
+<project name="varakumar01/vendor_oplus_camera" path="vendor/oplus/camera" revision="aox" remote="github" />
 <project name="LineageOS/android_hardware_pixelworks_interfaces" path="hardware/pixelworks/interfaces" revision="lineage-23.2" remote="github" />
 
 <!-- codesgning-->
