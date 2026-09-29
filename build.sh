@@ -17,7 +17,6 @@
 # --------------------------------------------------------------------------
 DOWNLOAD_BASE_URL="https://ferrari.serverhive.in/tony"   # <- edit if it changes
 WEB_ROOT="/var/www/html/tony"                             # nothing outside this is ever touched
-LATEST_SUBDIR="latest"
 
 DEVICE="lemonade"
 GMS_VARIANT="core"
@@ -332,7 +331,7 @@ publish_zip() {
     size="$(stat -c%s "$zip")"
     log_tagged PUBLISH "found $name ($(human_size "$size"))"
 
-    mkdir -p "$WEB_ROOT/$LATEST_SUBDIR"
+    mkdir -p "$WEB_ROOT"
 
     avail_kb="$(df -Pk "$WEB_ROOT" | awk 'NR==2 {print $4}')"
     needed_kb=$(( size / 1024 * 110 / 100 ))
@@ -342,39 +341,32 @@ publish_zip() {
         return 1
     fi
 
-    # Archive whatever's currently in latest/.
-    local f stem dest suffix
-    shopt -s nullglob
-    for f in "$WEB_ROOT/$LATEST_SUBDIR"/*.zip; do
-        stem="$(basename "$f" .zip)"
-        dest="$WEB_ROOT/$stem"
-        if [[ -e "$dest" ]]; then
-            suffix=2
-            while [[ -e "${dest}-${suffix}" ]]; do
-                suffix=$(( suffix + 1 ))
-            done
-            dest="${dest}-${suffix}"
-        fi
-        mkdir -p "$dest"
-        log_tagged PUBLISH "archiving previous build: $(basename "$f") -> $dest/"
-        mv "$f" "$dest/"
-        [[ -f "$f.sha256" ]] && mv "$f.sha256" "$dest/"
+    # AxionOS bakes the date into the zip name, so a second build the same
+    # day produces the exact same filename. Never overwrite a previous
+    # build: the first one of the day keeps the bare name, every one after
+    # it gets -2, -3, ... appended to the stem until a free name is found.
+    local stem="${name%.zip}" final_name="$name" n=2
+    while [[ -e "$WEB_ROOT/$final_name" ]]; do
+        final_name="${stem}-${n}.zip"
+        n=$(( n + 1 ))
     done
-    shopt -u nullglob
+    if [[ "$final_name" != "$name" ]]; then
+        log_tagged PUBLISH "$name already exists in $WEB_ROOT — saving this build as $final_name instead"
+    fi
 
-    log_tagged PUBLISH "copying $name into $WEB_ROOT/$LATEST_SUBDIR/ ..."
-    cp "$zip" "$WEB_ROOT/$LATEST_SUBDIR/${name}.part"
-    mv "$WEB_ROOT/$LATEST_SUBDIR/${name}.part" "$WEB_ROOT/$LATEST_SUBDIR/${name}"
+    log_tagged PUBLISH "copying $final_name into $WEB_ROOT/ ..."
+    cp "$zip" "$WEB_ROOT/${final_name}.part"
+    mv "$WEB_ROOT/${final_name}.part" "$WEB_ROOT/${final_name}"
 
     local sha
-    sha="$(sha256sum "$WEB_ROOT/$LATEST_SUBDIR/${name}" | awk '{print $1}')"
-    echo "$sha  ${name}" > "$WEB_ROOT/$LATEST_SUBDIR/${name}.sha256"
-    chmod 644 "$WEB_ROOT/$LATEST_SUBDIR/${name}" "$WEB_ROOT/$LATEST_SUBDIR/${name}.sha256"
+    sha="$(sha256sum "$WEB_ROOT/${final_name}" | awk '{print $1}')"
+    echo "$sha  ${final_name}" > "$WEB_ROOT/${final_name}.sha256"
+    chmod 644 "$WEB_ROOT/${final_name}" "$WEB_ROOT/${final_name}.sha256"
 
-    PUBLISHED_NAME="$name"
+    PUBLISHED_NAME="$final_name"
     PUBLISHED_SIZE="$size"
     PUBLISHED_SHA="$sha"
-    PUBLISHED_URL="${DOWNLOAD_BASE_URL}/${LATEST_SUBDIR}/${name}"
+    PUBLISHED_URL="${DOWNLOAD_BASE_URL}/${final_name}"
     return 0
 }
 
