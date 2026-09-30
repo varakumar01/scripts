@@ -15,6 +15,7 @@
 #   ./reposcan.sh --date 10/08/26[-DD/MM/YY] [-v]
 #   ./reposcan.sh --report [N|list]        -> view a saved sync log
 #   ./reposcan.sh --list                   -> list discovered repos
+#   ./reposcan.sh -re path/to/File.kt      -> which remote repo owns this file
 #
 set -uo pipefail
 
@@ -117,6 +118,18 @@ COMMANDS:
   ${C_GREEN}-l, --list${C_RESET}
         List every repo/project discovered in the current tree.
 
+  ${C_GREEN}-re, --repo${C_RESET} <file-path>
+        Which remote git repo a given file belongs to. <file-path> is
+        repo-relative (the same shape as a .patch file's '--- a/<path>'
+        header, e.g. ax_deviceinfo/src/com/.../DeviceInfoProvider.kt), not
+        a path from the ROM root. Tries, in order: (1) an exact file match
+        inside a repo already cloned in the current tree, (2) any
+        apply_patch() call (in any discovered repo's vendorsetup.sh) whose
+        .patch file's diff header touches this exact path — this finds the
+        repo even when it isn't cloned locally, since the patch itself
+        records the path, (3) a live 'gh api search/code' guess as a last
+        resort (needs 'gh', network, and is never treated as authoritative).
+
   ${C_GREEN}-h, --help${C_RESET}
         Show this help.
 
@@ -141,6 +154,8 @@ EXAMPLES:
   ${SCRIPT_NAME} --report list
   ${SCRIPT_NAME} --report 2
   ${SCRIPT_NAME} --list
+  ${SCRIPT_NAME} -re ax_deviceinfo/src/com/android/axion/deviceinfo/DeviceInfoProvider.kt
+  ${SCRIPT_NAME} --repo device/oneplus/lemonade/device.mk
 EOF
 }
 
@@ -219,6 +234,145 @@ resolve_target_repo() {
   else
     echo "${C_RED}no repo matches '$query'${C_RESET}" >&2
     return 1
+  fi
+}
+
+# ---------------------------------------------------------------------
+# -re / --repo  (which remote repo does a given repo-relative file path
+# belong to)
+# ---------------------------------------------------------------------
+
+# Strips a leading './' or '/' so '/ax_deviceinfo/Foo.kt' and
+# 'ax_deviceinfo/Foo.kt' resolve the same way.
+normalize_path_query() {
+  local q="$1"
+  q="${q#./}"
+  q="${q#/}"
+  echo "$q"
+}
+
+# Scans every discovered repo's vendorsetup.sh for apply_patch(...) calls,
+# and for each one whose referenced .patch file's diff header (--- a/<path>
+# / +++ b/<path>) matches the query, prints one line of
+# "target_dir<TAB>patch_file_path<TAB>description". A repo not cloned
+# locally (like axion_sdk) is still findable this way, because the file
+# path it's patched at is recorded in the patch's own diff header — the
+# patch is what ties that relative path to an apply_patch target_dir.
+find_patch_matches_for_path() {
+  local query="$1" p vs_file patches_dir
+  for p in "${REPO_PATHS[@]}"; do
+    vs_file="$p/vendorsetup.sh"
+    [[ -f "$vs_file" ]] || continue
+    patches_dir="$p/patches"
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      [[ "$line" =~ apply_patch[[:space:]]+\"([^\"]*)\"[[:space:]]+\"([^\"]*)\"[[:space:]]+\"([^\"]*)\" ]] || continue
+      local target="${BASH_REMATCH[1]}" patch_arg="${BASH_REMATCH[2]}" desc="${BASH_REMATCH[3]}"
+      local patch_path="$patches_dir/$(basename "$patch_arg")"
+      [[ -f "$patch_path" ]] || continue
+      local hpath
+      while IFS= read -r hpath; do
+        hpath="${hpath#a/}"; hpath="${hpath#b/}"
+        if [[ "$hpath" == "$query" || "$hpath" == */"$query" || "$query" == */"$hpath" ]]; then
+          printf '%s\t%s\t%s\n' "$target" "$patch_path" "$desc"
+          break
+        fi
+      done < <(grep -oE '^(---|\+\+\+) [ab]/[^[:space:]]+' "$patch_path" 2>/dev/null | awk '{print $2}')
+    done < <(grep "apply_patch \"" "$vs_file")
+  done
+}
+
+# Best-effort last resort: resolve a bare name/path (an apply_patch
+# target_dir we couldn't match locally, or any query with no local/patch
+# hit at all) to its real upstream GitHub org/repo via a live code search.
+# Network- and 'gh'-auth-dependent — only used when nothing local answers
+# the question, and always labeled as an unverified live guess.
+gh_guess_repo_for_path() {
+  local query="$1"
+  command -v gh >/dev/null 2>&1 || return 1
+  local base dir_hint
+  base="$(basename "$query")"
+  dir_hint="$(dirname "$query")"
+  dir_hint="${dir_hint%%/*}"
+  gh api -X GET search/code -f q="filename:${base} path:${dir_hint}" --jq '.items[0].repository.full_name' 2>/dev/null
+}
+
+cmd_repo_lookup() {
+  local raw_query="$1"
+  if [[ -z "$raw_query" ]]; then
+    echo "usage: $SCRIPT_NAME -re|--repo <file-path>" >&2
+    return 2
+  fi
+  local query
+  query="$(normalize_path_query "$raw_query")"
+
+  discover_repos
+  if [[ "${#REPO_PATHS[@]}" -eq 0 ]]; then
+    echo "${C_RED}error: no repositories found (looked for .repo/ or nested .git/ dirs)${C_RESET}"
+    return 2
+  fi
+
+  echo "${C_BOLD}==> Looking up repo for:${C_RESET} $query"
+  echo ""
+
+  local found=0 p
+
+  # 1. Fast path: does this path exist verbatim inside a repo already
+  #    checked out locally?
+  for p in "${REPO_PATHS[@]}"; do
+    if [[ -f "$p/$query" ]]; then
+      found=1
+      echo "${C_GREEN}[LOCAL CHECKOUT]${C_RESET} $query"
+      echo "    repo path : $p"
+      echo "    remote    : $(project_name_for "$p")"
+      echo ""
+    fi
+  done
+
+  # 2. Patch scan: an apply_patch() call somewhere targets a .patch whose
+  #    diff touches this exact path, even if that repo isn't cloned here.
+  local matches
+  matches="$(find_patch_matches_for_path "$query")"
+  if [[ -n "$matches" ]]; then
+    local target patch_path desc
+    while IFS=$'\t' read -r target patch_path desc; do
+      [[ -z "$target" ]] && continue
+      found=1
+      local remote
+      remote="$(project_name_for "$target")"
+      if [[ "$remote" == "-" || -z "$remote" ]]; then
+        local fuzzy
+        fuzzy="$(resolve_target_repo "$target" 2>/dev/null)"
+        if [[ -n "$fuzzy" ]]; then
+          remote="$(project_name_for "$fuzzy")"
+        else
+          echo "${C_DIM}    ('$target' isn't a local checkout — trying a live GitHub search...)${C_RESET}" >&2
+          remote="$(gh_guess_repo_for_path "$query")"
+          [[ -z "$remote" ]] && remote="? (gh search found nothing — check gh auth/network, or it's just not on GitHub)"
+        fi
+      fi
+      echo "${C_GREEN}[PATCHED]${C_RESET} $query"
+      echo "    apply_patch target : $target"
+      echo "    patch file          : $patch_path"
+      echo "    remote              : $remote"
+      echo "    patch description   : $desc"
+      echo ""
+    done <<< "$matches"
+  fi
+
+  if [[ "$found" -eq 0 ]]; then
+    echo "${C_YELLOW}no local checkout or apply_patch() reference found for '$query'.${C_RESET}"
+    echo "${C_DIM}Trying a live GitHub code search as a last resort...${C_RESET}"
+    local guess
+    guess="$(gh_guess_repo_for_path "$query")"
+    if [[ -n "$guess" ]]; then
+      echo "${C_GREEN}[GITHUB SEARCH]${C_RESET} $query"
+      echo "    best guess remote : $guess"
+      echo "    ${C_DIM}(unverified — a live 'gh api search/code' match, not a local record)${C_RESET}"
+    else
+      echo "${C_RED}nothing found — not a known local checkout, not referenced by any apply_patch() call, and no GitHub match.${C_RESET}"
+      return 1
+    fi
   fi
 }
 
@@ -1097,6 +1251,10 @@ main() {
       ;;
     -l|--list)
       cmd_list
+      ;;
+    -re|--repo)
+      shift
+      cmd_repo_lookup "$1"
       ;;
     -dts|--dts)
       cmd_sync_dts
