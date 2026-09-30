@@ -159,20 +159,64 @@ EOF
 # ---------------------------------------------------------------------
 # repo discovery — also builds REPO_NAMES (upstream project name)
 # ---------------------------------------------------------------------
+
+# Prints the URL of a project's first configured remote — never assumes
+# it's named 'origin'. A repo-tool checkout's remote is named after
+# whatever <remote name="..."> its manifest project references (e.g.
+# "axion", "aosp", "github"), not always 'origin'.
+first_remote_url() {
+  local p="$1" name
+  name="$(git -C "$p" remote 2>/dev/null | head -1)"
+  [[ -z "$name" ]] && return 1
+  git -C "$p" remote get-url "$name" 2>/dev/null
+}
+
+# Extracts "org/repo" from a remote URL, handling the common shapes:
+# git@host:org/repo.git, https://host/org/repo(.git), ssh://git@host/org/repo.
+# Prints nothing and fails if the URL has no org/repo-shaped path (one
+# slash-separated segment after the host).
+org_repo_from_url() {
+  local url="$1" rest
+  [[ -z "$url" ]] && return 1
+  url="${url%.git}"
+  if [[ "$url" == *://* ]]; then
+    rest="${url#*://}"   # strip scheme://
+    rest="${rest#*/}"    # strip host
+  elif [[ "$url" == *:* ]]; then
+    rest="${url#*:}"     # scp-like git@host:org/repo
+  else
+    rest="$url"
+  fi
+  [[ "$rest" == */* ]] || return 1
+  echo "$rest"
+}
+
 discover_repos() {
   REPO_PATHS=()
   REPO_NAMES=()
 
   if [[ -d .repo ]] && command -v repo >/dev/null 2>&1; then
     REPO_MODE="repo"
-    # `repo list` prints "path : name" — name is the manifest project
-    # name (e.g. "LineageOS/android_vendor_apn"), which is far more
-    # useful for finding the repo online than the local path alone.
+    # `repo list` prints "path : name" — name is the manifest project's
+    # own <project name="..."> and does NOT always include its org: a
+    # manifest can put the org on the <remote fetch="https://host/org/">
+    # element instead and give the project a bare name (confirmed on
+    # AxionAOSP/android_axion_sdk: `repo list` reports plain
+    # "android_axion_sdk", but its checkout's actual remote — named
+    # "axion", not "origin" — resolves to the full
+    # https://github.com/AxionAOSP/android_axion_sdk). So: use repo
+    # list's name as-is when it already looks like "org/repo"; otherwise
+    # try to upgrade it from the checkout's real remote URL.
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
       local p="${line%% : *}"
       local n="${line#* : }"
       REPO_PATHS+=("$p")
+      if [[ "$n" != */* ]]; then
+        local full
+        full="$(org_repo_from_url "$(first_remote_url "$p")")"
+        [[ -n "$full" ]] && n="$full"
+      fi
       REPO_NAMES["$p"]="$n"
     done < <(repo list 2>/dev/null)
   fi
@@ -188,14 +232,10 @@ discover_repos() {
     if [[ "${#REPO_PATHS[@]}" -eq 0 ]] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       REPO_PATHS+=(".")
     fi
-    local p url
+    local p full
     for p in "${REPO_PATHS[@]}"; do
-      url="$(git -C "$p" remote get-url origin 2>/dev/null)"
-      if [[ -n "$url" ]]; then
-        REPO_NAMES["$p"]="$(sed -E 's#^.*[:/]([^/]+/[^/]+?)(\.git)?$#\1#' <<< "$url")"
-      else
-        REPO_NAMES["$p"]="-"
-      fi
+      full="$(org_repo_from_url "$(first_remote_url "$p")")"
+      REPO_NAMES["$p"]="${full:--}"
     done
   fi
 }
