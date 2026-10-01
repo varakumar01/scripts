@@ -11,6 +11,9 @@
 <project name="varakumar01/vendor_oplus_camera" path="vendor/oplus/camera" revision="aox" remote="github" />
 <project name="LineageOS/android_hardware_pixelworks_interfaces" path="hardware/pixelworks/interfaces" revision="lineage-23.2" remote="github" />
 
+<!-- GhostWire (independent pentest app, included here) -->
+<project name="varakumar01/GhostWire" path="packages/apps/GhostWire" revision="aox" remote="github" />
+
 <!-- codesgning-->
 <project name="varakumar01/vendor_aox-priv_keys-template" path="vendor/lineage-priv/keys" revision="aox" remote="github" />
 
