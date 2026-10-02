@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
 <!-- leomandne trees -->
-<project name="varakumar01/Levion_kernel_OP9" path="kernel/oneplus/sm8350" revision="aox-nh" remote="github" />
+<project name="varakumar01/Levion_kernel_OP9" path="kernel/oneplus/sm8350" revision="aox-ksun" remote="github" />
 <project name="varakumar01/android_device_oneplus_lemonadep" path="device/oneplus/lemonadep" revision="test1" remote="github" />
 <project name="varakumar01/android_device_oneplus_sm8350-common" path="device/oneplus/sm8350-common" revision="aox" remote="github" />
 <project name="varakumar01/android_hardware_oplus" path="hardware/oplus" revision="aox" remote="github" />
