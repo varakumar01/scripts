@@ -14,6 +14,12 @@
 <!-- GhostWire (independent pentest app, included here) -->
 <project name="varakumar01/GhostWire" path="packages/apps/GhostWire" revision="aox" remote="github" />
 
+<!-- Datura firewall (port of esecoder/Datura-Firewall, included here) -->
+<project name="varakumar01/Datura-Firewall" path="packages/apps/Datura-Firewall" revision="aox" remote="github" />
+
+<!-- Advanced protection settings app (included here) -->
+<project name="varakumar01/PrivacySettings" path="packages/apps/PrivacySettings" revision="aox" remote="github" />
+
 <!-- codesgning-->
 <project name="varakumar01/vendor_aox-priv_keys-template" path="vendor/lineage-priv/keys" revision="aox" remote="github" />
 
