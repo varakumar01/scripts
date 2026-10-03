@@ -18,7 +18,7 @@
 <project name="varakumar01/Datura-Firewall" path="packages/apps/Datura-Firewall" revision="aox" remote="github" />
 
 <!-- Advanced protection settings app (included here) -->
-<project name="varakumar01/AxPrivacy" path="packages/apps/AxPrivacy" revision="aox" remote="github" />
+<project name="varakumar01/PrivacySettings" path="packages/apps/PrivacySettings" revision="aox" remote="github" />
 
 <!-- codesgning-->
 <project name="varakumar01/vendor_aox-priv_keys-template" path="vendor/lineage-priv/keys" revision="aox" remote="github" />
