@@ -24,6 +24,12 @@
 #   ./otauploader.sh -pd ls [path]      # browse the pixeldrain filesystem read-only
 #                                        #   (path is relative to /me, default: root);
 #                                        #   pass a printed dir name back in to descend
+#   ./otauploader.sh -pd mkdir [-p] <path>   # create a directory (-p: with parents)
+#   ./otauploader.sh -pd rm [-r] <path>...   # delete files (-r: dirs + contents, asks first)
+#   ./otauploader.sh -pd rmdir <path>...     # delete empty directories
+#   ./otauploader.sh -pd mv <src> <dst>      # move/rename (dst may be an existing dir)
+#   ./otauploader.sh -pd cp <src> <dst>      # copy a file (downloaded + re-uploaded)
+#                                        #   all paths are relative to /me
 set -euo pipefail
 
 SF_USER="varakumar01"
@@ -43,8 +49,8 @@ AUTO=0
 DRY_RUN=0
 DO_SF=0
 DO_PD=0
-PD_LS=0
-PD_LS_PATH=""
+PD_CMD=""
+PD_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --auto-upload|-au) AUTO=1; shift ;;
@@ -52,27 +58,21 @@ while [[ $# -gt 0 ]]; do
         --device) DEVICE="$2"; shift 2 ;;
         --sourceforge|-sf) DO_SF=1; shift ;;
         --pixeldrain|-pd)
-            if [[ "${2:-}" == "ls" ]]; then
-                PD_LS=1
-                if [[ -n "${3:-}" && "${3:0:1}" != "-" ]]; then
-                    PD_LS_PATH="$3"; shift 3
-                else
-                    shift 2
-                fi
-            else
-                DO_PD=1; shift
-            fi
+            case "${2:-}" in
+                ls|mkdir|rm|rmdir|cp|mv) PD_CMD="$2"; shift 2; PD_ARGS=("$@"); break ;;
+                *) DO_PD=1; shift ;;
+            esac
             ;;
         --help|-h)
-            sed -n '2,26p' "$0"; exit 0 ;;
+            sed -n '2,32p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
-(( DO_SF || DO_PD || PD_LS )) || DO_SF=1   # no target flag = today's default (SourceForge only)
+(( DO_SF || DO_PD )) || [[ -n $PD_CMD ]] || DO_SF=1   # no target flag = today's default (SourceForge only)
 
 abort() { echo "error: $*" >&2; exit 1; }
 
-if [[ ( $DO_PD -eq 1 || $PD_LS -eq 1 ) && -z "${PIXELDRAIN_API_KEY:-}" ]]; then
+if [[ ( $DO_PD -eq 1 || -n $PD_CMD ) && -z "${PIXELDRAIN_API_KEY:-}" ]]; then
     abort "--pixeldrain requires PIXELDRAIN_API_KEY in $SCRIPT_DIR/.env (see .env.example)"
 fi
 
@@ -82,6 +82,11 @@ fi
 pd() {
     printf 'user = ":%s"\n' "$PIXELDRAIN_API_KEY" | curl -sS --fail-with-body -K - "$@"
 }
+
+# pd_try <curl args...> -- like pd, but never trips `set -e`: prints the
+# response (or the error body) and returns curl's status, so callers can
+# report the real failure instead of guessing "not found".
+pd_try() { pd "$@" 2>&1; }
 
 # urlenc <string> -- percent-encode one path component (no slashes in input).
 urlenc() {
@@ -116,9 +121,7 @@ pd_urlpath() {
 pd_ls() {
     local path="${1:-}" api_path info PY
     api_path="me${path:+/$path}"
-    if ! info=$(pd "$PD_API/filesystem/$(pd_urlpath "$api_path")?stat"); then
-        abort "pixeldrain: path not found: /$path"
-    fi
+    info=$(pd_try "$PD_API/filesystem/$(pd_urlpath "$api_path")?stat") || abort "pixeldrain: ls /$path: $info"
     IFS= read -r -d '' PY <<'PYEOF' || true
 import json, sys
 from urllib.parse import quote
@@ -170,8 +173,62 @@ PYEOF
     python3 -c "$PY" <<<"$info"
 }
 
-if [[ $PD_LS -eq 1 ]]; then
-    pd_ls "$PD_LS_PATH"
+# --- pixeldrain file commands: -pd mkdir|rm|rmdir|mv|cp ---------------------
+pd_norm() { local p="${1#/}"; printf '%s' "${p%/}"; }       # strip leading/trailing /
+pd_url() { printf '%s/filesystem/%s' "$PD_API" "$(pd_urlpath "me/$(pd_norm "$1")")"; }
+pd_isdir() { pd_try "$(pd_url "$1")?stat" | python3 -c 'import json,sys; d=json.load(sys.stdin); n=d["path"][d["base_index"]]; sys.exit(n["type"]!="dir")' 2>/dev/null; }
+pd_run() {  # pd_run <desc> <curl args...>
+    local desc="$1" out; shift
+    out=$(pd_try "$@") || abort "pixeldrain: $desc: $out"
+    echo "$desc: ok"
+}
+
+pd_cmd() {
+    local cmd="$PD_CMD" flag="" a
+    set -- "${PD_ARGS[@]}"
+    if [[ "${1:-}" == -p || "${1:-}" == -r ]]; then flag="$1"; shift; fi
+    case "$cmd" in
+        ls) pd_ls "${1:-}" ;;
+        mkdir)
+            [[ $# -ge 1 ]] || abort "usage: -pd mkdir [-p] <path>"
+            for a; do pd_run "mkdir /$(pd_norm "$a")" -F "action=mkdir${flag:+all}" "$(pd_url "$a")"; done ;;
+        rm)
+            [[ $# -ge 1 ]] || abort "usage: -pd rm [-r] <path>..."
+            for a; do
+                if [[ $flag == -r ]]; then
+                    read -rp "Recursively delete /$(pd_norm "$a") and everything in it? [y/N] " reply
+                    [[ $reply =~ ^[Yy]$ ]] || { echo "skipped /$(pd_norm "$a")"; continue; }
+                    pd_run "rm -r /$(pd_norm "$a")" -X DELETE "$(pd_url "$a")?recursive"
+                else
+                    pd_isdir "$a" && abort "/$(pd_norm "$a") is a directory (use rmdir, or rm -r)"
+                    pd_run "rm /$(pd_norm "$a")" -X DELETE "$(pd_url "$a")"
+                fi
+            done ;;
+        rmdir)
+            [[ $# -ge 1 ]] || abort "usage: -pd rmdir <path>..."
+            for a; do pd_run "rmdir /$(pd_norm "$a")" -X DELETE "$(pd_url "$a")"; done ;;   # server refuses non-empty dirs
+        mv)
+            [[ $# -eq 2 ]] || abort "usage: -pd mv <src> <dst>"
+            local src dst
+            src=$(pd_norm "$1"); dst=$(pd_norm "$2")
+            pd_isdir "$dst" && dst="$dst/$(basename "$src")"    # mv into an existing dir, like coreutils
+            pd_run "mv /$src -> /$dst" -F action=rename -F "target=/me/$dst" "$(pd_url "$src")" ;;
+        cp)
+            [[ $# -eq 2 ]] || abort "usage: -pd cp <src> <dst>"
+            local src dst tmp
+            src=$(pd_norm "$1"); dst=$(pd_norm "$2")
+            pd_isdir "$src" && abort "cp: /$src is a directory (files only)"
+            pd_isdir "$dst" && dst="$dst/$(basename "$src")"
+            # ponytail: pixeldrain has no server-side copy; goes via local disk. Files only.
+            tmp=$(mktemp); trap 'rm -f "$tmp"' RETURN
+            echo "cp: downloading /$src ..."
+            pd -o "$tmp" "$(pd_url "$src")" || abort "pixeldrain: cp: download of /$src failed"
+            pd_run "cp /$src -> /$dst" -X PUT --upload-file "$tmp" "$(pd_url "$dst")?make_parents=true" ;;
+    esac
+}
+
+if [[ -n $PD_CMD ]]; then
+    pd_cmd
     exit 0
 fi
 
