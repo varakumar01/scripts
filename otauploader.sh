@@ -28,6 +28,7 @@
 #   ./otauploader.sh -pd rm [-r] <path>...   # delete files (-r: dirs + contents, asks first)
 #   ./otauploader.sh -pd rmdir <path>...     # delete empty directories
 #   ./otauploader.sh -pd mv <src> <dst>      # move/rename (dst may be an existing dir)
+#   ./otauploader.sh -pd -u <file> <dst>     # upload a local file (dst may be a dir or a full path)
 #   ./otauploader.sh -pd cp <src> <dst>      # copy a file (downloaded + re-uploaded)
 #                                        #   all paths are relative to /me
 set -euo pipefail
@@ -59,12 +60,12 @@ while [[ $# -gt 0 ]]; do
         --sourceforge|-sf) DO_SF=1; shift ;;
         --pixeldrain|-pd)
             case "${2:-}" in
-                ls|mkdir|rm|rmdir|cp|mv) PD_CMD="$2"; shift 2; PD_ARGS=("$@"); break ;;
+                ls|mkdir|rm|rmdir|cp|mv|up|-u) PD_CMD="$2"; shift 2; PD_ARGS=("$@"); break ;;
                 *) DO_PD=1; shift ;;
             esac
             ;;
         --help|-h)
-            sed -n '2,32p' "$0"; exit 0 ;;
+            sed -n '2,33p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -213,6 +214,12 @@ pd_cmd() {
             src=$(pd_norm "$1"); dst=$(pd_norm "$2")
             pd_isdir "$dst" && dst="$dst/$(basename "$src")"    # mv into an existing dir, like coreutils
             pd_run "mv /$src -> /$dst" -F action=rename -F "target=/me/$dst" "$(pd_url "$src")" ;;
+        up|-u)
+            [[ $# -eq 2 && -f $1 ]] || abort "usage: -pd -u <local file> <remote path>"
+            local dst; dst=$(pd_norm "$2")
+            # remote ending in / or naming an existing dir = upload into it under the local name
+            if [[ $2 == */ ]] || pd_isdir "$dst"; then dst="$dst/$(basename "$1")"; fi
+            pd_run "upload $1 -> /$dst" -X PUT --upload-file "$1" "$(pd_url "$dst")?make_parents=true" ;;
         cp)
             [[ $# -eq 2 ]] || abort "usage: -pd cp <src> <dst>"
             local src dst tmp
