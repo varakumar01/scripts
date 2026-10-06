@@ -102,6 +102,7 @@ LINK=""; [[ -n $URL ]] && { LINK=$(curl -sL -o /dev/null -r 0-0 -w '%{http_code}
 echo "================ Telegram post preview ================"
 echo "bot:     $BOT"
 echo "chat:    $TG_CHAT_ID"
+[[ -f $SCRIPT_DIR/tg_banner.png ]] && echo "image:   tg_banner.png"
 if [[ -n $URL ]]; then
     echo "button:  [$BTN_LABEL] -> $URL"
     case "$LINK" in 200|206) echo "link:    OK (HTTP $LINK)" ;; *) echo "link:    !! HTTP $LINK -- the button will not work" ;; esac
@@ -116,7 +117,15 @@ if (( ! YES )); then read -rp "Send to Telegram? [y/N] " reply; [[ $reply =~ ^[Y
 
 [[ -n $MSG ]] || abort "empty message"
 EXTRA=()
-[[ -n $URL ]] && EXTRA=(--data-urlencode "reply_markup=$(python3 -c 'import json,sys; print(json.dumps({"inline_keyboard":[[{"text":sys.argv[1],"url":sys.argv[2]}]]}))' "$BTN_LABEL" "$URL")")
-RES=$(tg sendMessage --data-urlencode "chat_id=$TG_CHAT_ID" --data-urlencode "text=$MSG" \
-        --data-urlencode parse_mode=HTML -d disable_web_page_preview=true "${EXTRA[@]}") || true
+[[ -n $URL ]] && EXTRA=(--form-string "reply_markup=$(python3 -c 'import json,sys; print(json.dumps({"inline_keyboard":[[{"text":sys.argv[1],"url":sys.argv[2]}]]}))' "$BTN_LABEL" "$URL")")
+# Banner goes out as a photo with the message as its caption (1024-char limit,
+# so longer messages fall back to plain text). tg_banner.png is a 1920px copy of
+# axion.png: sendPhoto rejects files over 10 MB.
+BANNER="$SCRIPT_DIR/tg_banner.png"
+if [[ -f $BANNER && ${#MSG} -le 1024 ]]; then
+    RES=$(tg sendPhoto --form-string "chat_id=$TG_CHAT_ID" -F "photo=@$BANNER" --form-string "caption=$MSG" --form-string parse_mode=HTML "${EXTRA[@]}") || true
+else
+    RES=$(tg sendMessage --form-string "chat_id=$TG_CHAT_ID" --form-string "text=$MSG" \
+            --form-string parse_mode=HTML --form-string disable_web_page_preview=true "${EXTRA[@]}") || true
+fi
 python3 -c 'import json,sys; d=json.load(sys.stdin); print("sent, message_id", d["result"]["message_id"]) if d.get("ok") else sys.exit("telegram error: "+str(d.get("description")))' <<<"$RES"
