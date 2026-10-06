@@ -65,18 +65,22 @@ if (( CUSTOM )); then
     if [[ -n $BUTTON ]]; then BTN_LABEL="${BUTTON%%|*}"; URL="${BUTTON#*|}"; else BTN_LABEL=""; URL=""; fi
 else
     MSG=$(python3 - "$JSON" "$TEMPLATE" "$NOTES" "$URL" "$FLAVOR" "$DEVICE" "$MD5" <<'PY'
-import json, sys, html, datetime, re, hashlib, urllib.request, email.utils
+import json, sys, html, datetime, re, hashlib, subprocess, email.utils
 jf, tf, notes, url, flavor, device, md5 = sys.argv[1:8]
 if url:  # --url: describe the file the link actually points to, not the manifest
     name = url.rsplit("/", 1)[-1].split("?")[0]
-    h = urllib.request.urlopen(urllib.request.Request(url, method="HEAD")).headers
+    # ranged GET, not HEAD: some hosts (e.g. serverhive) 403 a HEAD
+    hd = subprocess.run(["curl", "-sSL", "-D-", "-o", "/dev/null", "-r", "0-0", url],
+                        capture_output=True, text=True, check=True).stdout.strip().split("\n\n")[-1]
+    h = {k.lower(): v for k, v in (l.split(": ", 1) for l in hd.splitlines() if ": " in l)}
+    size = int(h["content-range"].rsplit("/", 1)[1])
     if not md5:  # pixeldrain only exposes sha256, so hash the stream
         print("hashing %s for MD5 (pass --md5 to skip)..." % name, file=sys.stderr)
-        m, f = hashlib.md5(), urllib.request.urlopen(url)
-        while c := f.read(1 << 20): m.update(c)
+        m, f = hashlib.md5(), subprocess.Popen(["curl", "-sSL", url], stdout=subprocess.PIPE)
+        while c := f.stdout.read(1 << 20): m.update(c)
         md5 = m.hexdigest()
-    r = dict(filename=name, id=md5, size=int(h["Content-Length"]), url=url,
-             datetime=email.utils.parsedate_to_datetime(h["Last-Modified"]).timestamp(),
+    r = dict(filename=name, id=md5, size=size, url=url,
+             datetime=email.utils.parsedate_to_datetime(h["last-modified"]).timestamp(),
              version=(re.search(r"axion-([\d.]+)", name) or [0, "?"])[1],
              romtype="OFFICIAL" if "-OFFICIAL" in name and "UNOFFICIAL" not in name else "UNOFFICIAL")
 else:
