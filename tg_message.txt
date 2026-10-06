@@ -1,0 +1,4 @@
+<b>AxionOS {version} | {device}</b>
+📅 {date}  •  📦 {size}  •  {romtype}
+<code>{filename}</code>
+{notes}
