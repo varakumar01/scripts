@@ -20,7 +20,7 @@
 #   ./tg_post.sh --text "..." --button "Changelog|https://example.com"   # add a button
 #   ./tg_post.sh -e --text ""         # write the message in $EDITOR
 #   ./tg_post.sh -y                   # skip the confirm prompt
-# Template placeholders: {device} {version} {date} {filename} {size} {url} {romtype} {notes} {longdate} {md5} {variant} {model}
+# Template placeholders: {device} {version} {date} {filename} {size} {url} {romtype} {notes} {longdate} {hashname} {hash} {variant} {model}
 # Message is parse_mode=HTML (<b> <i> <code> <a href>); values are escaped for you.
 set -euo pipefail
 
@@ -69,18 +69,38 @@ import json, sys, html, datetime, re, hashlib, subprocess, email.utils
 jf, tf, notes, url, flavor, device, md5 = sys.argv[1:8]
 if url:  # --url: describe the file the link actually points to, not the manifest
     name = url.rsplit("/", 1)[-1].split("?")[0]
-    # ranged GET, not HEAD: some hosts (e.g. serverhive) 403 a HEAD
-    hd = subprocess.run(["curl", "-sSL", "-D-", "-o", "/dev/null", "-r", "0-0", url],
-                        capture_output=True, text=True, check=True).stdout.strip().split("\n\n")[-1]
-    h = {k.lower(): v for k, v in (l.split(": ", 1) for l in hd.splitlines() if ": " in l)}
-    size = int(h["content-range"].rsplit("/", 1)[1])
-    if not md5:  # pixeldrain only exposes sha256, so hash the stream
-        print("hashing %s for MD5 (pass --md5 to skip)..." % name, file=sys.stderr)
-        m, f = hashlib.md5(), subprocess.Popen(["curl", "-sSL", url], stdout=subprocess.PIPE)
-        while c := f.stdout.read(1 << 20): m.update(c)
-        md5 = m.hexdigest()
-    r = dict(filename=name, id=md5, size=size, url=url,
-             datetime=email.utils.parsedate_to_datetime(h["last-modified"]).timestamp(),
+    hn, hv = "MD5", md5
+    pd = re.match(r"https?://pixeldrain\.\w+/(?:api/(filesystem)/|(?:u|api/file)/)", url)
+    ok = False
+    if pd:  # pixeldrain's own API: instant, no download -- but it only knows sha256
+        try:
+            api = url.replace("/u/", "/api/file/", 1) + ("?stat" if pd[1] else "/info")
+            j = json.loads(subprocess.run(["curl", "-sSL", api], capture_output=True, text=True, check=True).stdout)
+            if pd[1]: j = j["path"][j["base_index"]]
+            name = j.get("name", name)
+            size = j.get("file_size", j.get("size"))
+            ts = datetime.datetime.fromisoformat((j.get("modified") or j["date_upload"]).replace("Z", "+00:00")).timestamp()
+            # the manifest already holds the zip's MD5 when this is the file it describes
+            try: m = json.load(open(jf))["response"][-1]
+            except Exception: m = {}
+            if not md5: hn, hv = ("MD5", m["id"]) if m.get("filename") == name else ("SHA256", j.get("sha256_sum") or j["hash_sha256"])
+            ok = True
+        except Exception as e:  # private/expired/blocked: fall back to the generic lookup
+            print("pixeldrain API failed (%s); falling back to ranged GET" % e, file=sys.stderr)
+    if not ok:
+        # ranged GET, not HEAD: some hosts (e.g. serverhive) 403 a HEAD
+        hd = subprocess.run(["curl", "-sSL", "-D-", "-o", "/dev/null", "-r", "0-0", url],
+                            capture_output=True, text=True, check=True).stdout.strip().split("\n\n")[-1]
+        h = {k.lower(): v for k, v in (l.split(": ", 1) for l in hd.splitlines() if ": " in l)}
+        if "content-range" not in h: sys.exit("error: cannot read size/date from %s (%s)" % (url, hd.splitlines()[0]))
+        size = int(h["content-range"].rsplit("/", 1)[1])
+        ts = email.utils.parsedate_to_datetime(h["last-modified"]).timestamp()
+        if not md5:  # no hash from the host, so hash the stream
+            print("hashing %s for MD5 (pass --md5 to skip)..." % name, file=sys.stderr)
+            m, f = hashlib.md5(), subprocess.Popen(["curl", "-sSL", url], stdout=subprocess.PIPE)
+            while c := f.stdout.read(1 << 20): m.update(c)
+            hv = m.hexdigest()
+    r = dict(filename=name, id=hv, size=size, url=url, hn=hn, datetime=ts,
              version=(re.search(r"axion-([\d.]+)", name) or [0, "?"])[1],
              romtype="OFFICIAL" if "-OFFICIAL" in name and "UNOFFICIAL" not in name else "UNOFFICIAL")
 else:
@@ -97,7 +117,7 @@ v = dict(device=device, version=r["version"], filename=r["filename"],
 d = datetime.datetime.fromtimestamp(r["datetime"], datetime.timezone.utc)
 sfx = "th" if 11 <= d.day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(d.day % 10, "th")
 v["longdate"] = f"{d.day}{sfx} {d:%B %Y}"
-v["md5"] = r["id"]  # OTA manifest id is the zip's md5
+v["hashname"], v["hash"] = r.get("hn", "MD5"), r["id"]  # manifest "id" is assumed to be the zip's md5
 v["variant"] = "GAPPS (Google Apps Included)" if flavor == "GMS" else "VANILLA (No Google Apps)"
 v["model"] = "Oneplus 9 Pro" if v["device"] == "lemonadep" else "Oneplus 9"
 t = open(tf, encoding="utf-8").read()

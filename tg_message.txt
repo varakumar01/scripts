@@ -6,7 +6,7 @@ By <a href="https://t.me/Varakumar">T๏иy</a>
 ▫️ File: {filename}
 ▫️ Size: {size}
 ▫️ Date: {longdate}
-▫️ MD5: {md5}
+▫️ {hashname}: {hash}
 
 💬 Reach Support If have any queries - <a href="https://t.me/axionos_op9">Click Here</a>
 
