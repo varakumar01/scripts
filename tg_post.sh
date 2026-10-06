@@ -20,7 +20,7 @@
 #   ./tg_post.sh --text "..." --button "Changelog|https://example.com"   # add a button
 #   ./tg_post.sh -e --text ""         # write the message in $EDITOR
 #   ./tg_post.sh -y                   # skip the confirm prompt
-# Template placeholders: {device} {version} {date} {filename} {size} {url} {romtype} {notes}
+# Template placeholders: {device} {version} {date} {filename} {size} {url} {romtype} {notes} {longdate} {md5} {variant} {model}
 # Message is parse_mode=HTML (<b> <i> <code> <a href>); values are escaped for you.
 set -euo pipefail
 
@@ -63,9 +63,9 @@ if (( CUSTOM )); then
     MSG="$TEXT"
     if [[ -n $BUTTON ]]; then BTN_LABEL="${BUTTON%%|*}"; URL="${BUTTON#*|}"; else BTN_LABEL=""; URL=""; fi
 else
-    MSG=$(python3 - "$JSON" "$TEMPLATE" "$NOTES" "$URL" <<'PY'
+    MSG=$(python3 - "$JSON" "$TEMPLATE" "$NOTES" "$URL" "$FLAVOR" <<'PY'
 import json, sys, html, datetime
-jf, tf, notes, url = sys.argv[1:5]
+jf, tf, notes, url, flavor = sys.argv[1:6]
 r = json.load(open(jf))["response"][-1]
 n = r["size"]
 for u in ("B", "KB", "MB", "GB"):
@@ -75,6 +75,12 @@ v = dict(device=jf.rsplit("/", 1)[-1][:-5], version=r["version"], filename=r["fi
          romtype=r["romtype"], notes=notes, url=url or r["url"],
          size=f"{n:.2f} {u}" if u != "B" else f"{n} B",
          date=datetime.datetime.fromtimestamp(r["datetime"], datetime.timezone.utc).strftime("%Y-%m-%d"))
+d = datetime.datetime.fromtimestamp(r["datetime"], datetime.timezone.utc)
+sfx = "th" if 11 <= d.day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(d.day % 10, "th")
+v["longdate"] = f"{d.day}{sfx} {d:%B %Y}"
+v["md5"] = r["id"]  # OTA manifest id is the zip's md5
+v["variant"] = "GAPPS (Google Apps Included)" if flavor == "GMS" else "VANILLA (No Google Apps)"
+v["model"] = "Oneplus 9 Pro" if v["device"] == "lemonadep" else "Oneplus 9"
 t = open(tf, encoding="utf-8").read()
 for k, val in v.items():
     t = t.replace("{%s}" % k, html.escape(str(val)))

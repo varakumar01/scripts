@@ -1,4 +1,13 @@
-<b>AxionOS {version} | {device}</b>
-📅 {date}  •  📦 {size}  •  {romtype}
-<code>{filename}</code>
-{notes}
+New Release of Axion OS v{version} for {model} ({device}) is Up!
+
+By <a href="https://t.me/Varakumar">T๏иy</a>
+
+▫️ Variant: {variant}
+▫️ File: {filename}
+▫️ Size: {size}
+▫️ Date: {longdate}
+▫️ MD5: {md5}
+
+💬 Reach Support If have any queries - <a href="https://t.me/axionos_op9">Click Here</a>
+
+#Android16 #{device} @axionos_op9
