@@ -27,12 +27,13 @@ set -euo pipefail
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 [[ -f "$SCRIPT_DIR/.env" ]] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
 
-DEVICE=lemonade FLAVOR=GMS URL="" TEMPLATE="$SCRIPT_DIR/tg_message.txt" NOTES="" TEXT="" BUTTON="" CUSTOM=0 EDIT=0 DRY=0 YES=0
+DEVICE=lemonade FLAVOR=GMS URL="" TEMPLATE="$SCRIPT_DIR/tg_message.txt" NOTES="" MD5="" TEXT="" BUTTON="" CUSTOM=0 EDIT=0 DRY=0 YES=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --device) DEVICE="$2"; shift 2 ;;
         --vanilla) FLAVOR=VANILLA; shift ;;
         --url) URL="$2"; shift 2 ;;
+        --md5) MD5="$2"; shift 2 ;;
         -m) TEMPLATE="$2"; shift 2 ;;
         --notes) NOTES="$2"; shift 2 ;;
         -e) EDIT=1; shift ;;
@@ -49,7 +50,7 @@ abort() { echo "error: $*" >&2; exit 1; }
 [[ -n "${TG_BOT_TOKEN:-}" && -n "${TG_CHAT_ID:-}" ]] || abort "set TG_BOT_TOKEN and TG_CHAT_ID in $SCRIPT_DIR/.env (see .env.example)"
 JSON="$SCRIPT_DIR/OTA/$FLAVOR/$DEVICE.json"
 (( CUSTOM )) || {
-    [[ -f $JSON ]] || abort "$JSON not found -- run otauploader.sh first"
+    [[ -n $URL || -f $JSON ]] || abort "$JSON not found -- run otauploader.sh first"
     [[ -f $TEMPLATE ]] || abort "template $TEMPLATE not found"
 }
 
@@ -63,15 +64,29 @@ if (( CUSTOM )); then
     MSG="$TEXT"
     if [[ -n $BUTTON ]]; then BTN_LABEL="${BUTTON%%|*}"; URL="${BUTTON#*|}"; else BTN_LABEL=""; URL=""; fi
 else
-    MSG=$(python3 - "$JSON" "$TEMPLATE" "$NOTES" "$URL" "$FLAVOR" <<'PY'
-import json, sys, html, datetime
-jf, tf, notes, url, flavor = sys.argv[1:6]
-r = json.load(open(jf))["response"][-1]
+    MSG=$(python3 - "$JSON" "$TEMPLATE" "$NOTES" "$URL" "$FLAVOR" "$DEVICE" "$MD5" <<'PY'
+import json, sys, html, datetime, re, hashlib, urllib.request, email.utils
+jf, tf, notes, url, flavor, device, md5 = sys.argv[1:8]
+if url:  # --url: describe the file the link actually points to, not the manifest
+    name = url.rsplit("/", 1)[-1].split("?")[0]
+    h = urllib.request.urlopen(urllib.request.Request(url, method="HEAD")).headers
+    if not md5:  # pixeldrain only exposes sha256, so hash the stream
+        print("hashing %s for MD5 (pass --md5 to skip)..." % name, file=sys.stderr)
+        m, f = hashlib.md5(), urllib.request.urlopen(url)
+        while c := f.read(1 << 20): m.update(c)
+        md5 = m.hexdigest()
+    r = dict(filename=name, id=md5, size=int(h["Content-Length"]), url=url,
+             datetime=email.utils.parsedate_to_datetime(h["Last-Modified"]).timestamp(),
+             version=(re.search(r"axion-([\d.]+)", name) or [0, "?"])[1],
+             romtype="OFFICIAL" if "-OFFICIAL" in name and "UNOFFICIAL" not in name else "UNOFFICIAL")
+else:
+    r = json.load(open(jf))["response"][-1]
+    device = jf.rsplit("/", 1)[-1][:-5]
 n = r["size"]
 for u in ("B", "KB", "MB", "GB"):
     if n < 1024 or u == "GB": break
     n /= 1024
-v = dict(device=jf.rsplit("/", 1)[-1][:-5], version=r["version"], filename=r["filename"],
+v = dict(device=device, version=r["version"], filename=r["filename"],
          romtype=r["romtype"], notes=notes, url=url or r["url"],
          size=f"{n:.2f} {u}" if u != "B" else f"{n} B",
          date=datetime.datetime.fromtimestamp(r["datetime"], datetime.timezone.utc).strftime("%Y-%m-%d"))
