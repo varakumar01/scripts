@@ -11,13 +11,11 @@
 # is set, else ssh's own interactive password prompt) and reused for every
 # sftp call via OpenSSH ControlMaster — sshpass is optional, not required.
 #
-# Usage:
-#   ./otauploader.sh                    # SourceForge only (default), autodetect
-#                                        #   device from out/, show summary, ask
-#   ./otauploader.sh -pd                # pixeldrain only
-#   ./otauploader.sh -sf -pd            # both targets
-#   ./otauploader.sh --device lemonadep # override autodetection for a specific device
-#   ./otauploader.sh -au                # same, but skip the summary prompt
+# Usage (--device and at least one of -sf / -pd are MANDATORY; no defaults):
+#   ./otauploader.sh --device lemonade -sf        # SourceForge, show summary, ask
+#   ./otauploader.sh --device lemonade -pd        # pixeldrain only
+#   ./otauploader.sh --device lemonade -sf -pd    # both targets
+#   ./otauploader.sh --device lemonade -sf -au    # skip the summary prompt
 #                                        #   (a brand-new version folder still prompts)
 #   ./otauploader.sh --beta             # test build: upload straight to <device>/test/
 #                                        #   (+ test/recovery/), no version-folder logic,
@@ -41,7 +39,7 @@ SF_HOST="frs.sourceforge.net"
 SF_PROJECT="axion-os"   # SourceForge unix name -- lowercase, frs SFTP paths are case-sensitive
 PD_API="https://pixeldrain.com/api"
 PD_ROOT="Axion"         # top-level folder under /me on pixeldrain
-DEVICE=""   # empty = autodetect from out/target/product/*/ below
+DEVICE=""   # required: --device <name>
 IMAGES=(boot.img vendor_boot.img vbmeta.img dtbo.img vendor_dlkm.img super_empty.img)
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 FIRMWARE_SRC="$SCRIPT_DIR/firmware"
@@ -70,13 +68,15 @@ while [[ $# -gt 0 ]]; do
             esac
             ;;
         --help|-h)
-            sed -n '2,36p' "$0"; exit 0 ;;
+            sed -n '2,34p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
-(( DO_SF || DO_PD )) || [[ -n $PD_CMD ]] || DO_SF=1   # no target flag = today's default (SourceForge only)
 
 abort() { echo "error: $*" >&2; exit 1; }
+
+(( DO_SF || DO_PD )) || [[ -n $PD_CMD ]] || abort "no upload target given: pass -sf (SourceForge) and/or -pd (pixeldrain)"
+[[ -n $PD_CMD || -n $DEVICE ]] || abort "no device given: pass --device <name> (e.g. --device lemonade)"
 
 if [[ ( $DO_PD -eq 1 || -n $PD_CMD ) && -z "${PIXELDRAIN_API_KEY:-}" ]]; then
     abort "--pixeldrain requires PIXELDRAIN_API_KEY in $SCRIPT_DIR/.env (see .env.example)"
@@ -244,14 +244,6 @@ if [[ -n $PD_CMD ]]; then
     exit 0
 fi
 
-if [[ -z $DEVICE ]]; then
-    newest=$(find out/target/product -mindepth 2 -maxdepth 2 -type f \
-               -name 'axion-*.zip' ! -name '*INCREMENTAL*' ! -name '*target_files*' \
-               -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
-    [[ -n $newest ]] || abort "no axion-*.zip found under out/target/product/*/ — pass --device"
-    DEVICE=$(basename "$(dirname "$newest")")
-    echo "device: $DEVICE (autodetected from $(basename "$newest"))"
-fi
 SF_BASE="/home/frs/project/$SF_PROJECT/$DEVICE"
 PD_BASE="me/$PD_ROOT/$DEVICE"   # path under the pixeldrain filesystem API, minus version dir
 
