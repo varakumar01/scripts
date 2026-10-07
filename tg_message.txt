@@ -1,13 +1,13 @@
-New Release of Axion OS v{version} for {model} ({device}) is Up!
+<b>New Release of Axion OS {beta}v{version} for {model} ({device}) is Up!</b>
 
 By <a href="https://t.me/Varakumar">T๏иy</a>
 
-▫️ Variant: {variant}
-▫️ File: {filename}
-▫️ Size: {size}
-▫️ Date: {longdate}
-▫️ {hashname}: {hash}
+▫️ <b>Variant:</b> {variant}
+▫️ <b>File:</b> <code>{filename}</code>
+▫️ <b>Size:</b> {size}
+▫️ <b>Date:</b> {longdate}
+▫️ <b>{hashname}:</b> <code>{hash}</code>
 
-💬 Reach Support If have any queries - <a href="https://t.me/axionos_op9">Click Here</a>
+💬 <b>Reach Support If have any queries -</b> <a href="https://t.me/axionos_op9">Click Here</a>
 
 #Android16 #{device} @axionos_op9

@@ -25,7 +25,7 @@
 #   ./tg_post.sh --text "..." --button "Changelog|https://example.com"   # add a button
 #   ./tg_post.sh -e --text ""         # write the message in $EDITOR
 #   ./tg_post.sh -y                   # skip the confirm prompt
-# Template placeholders: {device} {version} {date} {filename} {size} {url} {romtype} {notes} {longdate} {hashname} {hash} {variant} {model}
+# Template placeholders: {device} {version} {date} {filename} {size} {url} {romtype} {notes} {longdate} {hashname} {hash} {variant} {model} {beta}
 # Message is parse_mode=HTML (<b> <i> <code> <a href>); values are escaped for you.
 set -euo pipefail
 
@@ -156,6 +156,7 @@ sfx = "th" if 11 <= d.day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(d.day % 10,
 v["longdate"] = f"{d.day}{sfx} {d:%B %Y}"
 v["hashname"], v["hash"] = r.get("hn", "MD5"), r["id"]  # manifest "id" is assumed to be the zip's md5
 v["variant"] = "GAPPS (Google Apps Included)" if flavor == "GMS" else "VANILLA (No Google Apps)"
+v["beta"] = "BETA BUILD " if beta == "1" else ""
 v["model"] = "Oneplus 9 Pro" if v["device"] == "lemonadep" else "Oneplus 9"
 t = open(tf, encoding="utf-8").read()
 for k, val in v.items():
