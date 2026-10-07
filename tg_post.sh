@@ -5,8 +5,13 @@
 #
 # Secrets (TG_BOT_TOKEN, TG_CHAT_ID) come from scripts/.env -- see .env.example.
 #
+# With no --url the build is discovered on pixeldrain (needs PIXELDRAIN_API_KEY):
+# the newest <N>.x folder under Axion/<device>/, its newest zip, and that zip's
+# .md5. --beta does the same inside Axion/<device>/test/ instead.
+#
 # Usage:
-#   ./tg_post.sh                      # lemonade, GMS
+#   ./tg_post.sh                      # lemonade, GMS, newest N.x folder
+#   ./tg_post.sh --beta               # newest build in Axion/<device>/test/
 #   ./tg_post.sh --device lemonadep
 #   ./tg_post.sh --vanilla            # OTA/VANILLA/<device>.json
 #   ./tg_post.sh --url <link>         # override the button link
@@ -27,11 +32,12 @@ set -euo pipefail
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 [[ -f "$SCRIPT_DIR/.env" ]] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
 
-DEVICE=lemonade FLAVOR=GMS URL="" TEMPLATE="$SCRIPT_DIR/tg_message.txt" NOTES="" MD5="" TEXT="" BUTTON="" CUSTOM=0 EDIT=0 DRY=0 YES=0
+DEVICE=lemonade FLAVOR=GMS URL="" TEMPLATE="$SCRIPT_DIR/tg_message.txt" NOTES="" MD5="" TEXT="" BUTTON="" BETA=0 CUSTOM=0 EDIT=0 DRY=0 YES=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --device) DEVICE="$2"; shift 2 ;;
         --vanilla) FLAVOR=VANILLA; shift ;;
+        --beta) BETA=1; shift ;;
         --url) URL="$2"; shift 2 ;;
         --md5) MD5="$2"; shift 2 ;;
         -m) TEMPLATE="$2"; shift 2 ;;
@@ -41,16 +47,16 @@ while [[ $# -gt 0 ]]; do
         --button) BUTTON="$2"; shift 2 ;;
         --dry-run) DRY=1; shift ;;
         -y) YES=1; shift ;;
-        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
 
 abort() { echo "error: $*" >&2; exit 1; }
 [[ -n "${TG_BOT_TOKEN:-}" && -n "${TG_CHAT_ID:-}" ]] || abort "set TG_BOT_TOKEN and TG_CHAT_ID in $SCRIPT_DIR/.env (see .env.example)"
-JSON="$SCRIPT_DIR/OTA/$FLAVOR/$DEVICE.json"
+JSON="$SCRIPT_DIR/OTA/$FLAVOR/$DEVICE.json"   # only read by the --url branch (MD5 shortcut)
 (( CUSTOM )) || {
-    [[ -n $URL || -f $JSON ]] || abort "$JSON not found -- run otauploader.sh first"
+    [[ -n $URL || -n "${PIXELDRAIN_API_KEY:-}" ]] || abort "set PIXELDRAIN_API_KEY in $SCRIPT_DIR/.env (or pass --url)"
     [[ -f $TEMPLATE ]] || abort "template $TEMPLATE not found"
 }
 
@@ -64,9 +70,9 @@ if (( CUSTOM )); then
     MSG="$TEXT"
     if [[ -n $BUTTON ]]; then BTN_LABEL="${BUTTON%%|*}"; URL="${BUTTON#*|}"; else BTN_LABEL=""; URL=""; fi
 else
-    MSG=$(python3 - "$JSON" "$TEMPLATE" "$NOTES" "$URL" "$FLAVOR" "$DEVICE" "$MD5" <<'PY'
+    OUT=$(python3 - "$JSON" "$TEMPLATE" "$NOTES" "$URL" "$FLAVOR" "$DEVICE" "$MD5" "$BETA" <<'PY'
 import json, sys, html, datetime, re, hashlib, subprocess, email.utils
-jf, tf, notes, url, flavor, device, md5 = sys.argv[1:8]
+jf, tf, notes, url, flavor, device, md5, beta = sys.argv[1:9]
 if url:  # --url: describe the file the link actually points to, not the manifest
     name = url.rsplit("/", 1)[-1].split("?")[0]
     hn, hv = "MD5", md5
@@ -104,8 +110,39 @@ if url:  # --url: describe the file the link actually points to, not the manifes
              version=(re.search(r"axion-([\d.]+)", name) or [0, "?"])[1],
              romtype="OFFICIAL" if "-OFFICIAL" in name and "UNOFFICIAL" not in name else "UNOFFICIAL")
 else:
-    r = json.load(open(jf))["response"][-1]
-    device = jf.rsplit("/", 1)[-1][:-5]
+    import base64, os, urllib.request, urllib.parse
+    API = "https://pixeldrain.com/api"
+    auth = "Basic " + base64.b64encode((":" + os.environ["PIXELDRAIN_API_KEY"]).encode()).decode()
+    def get(path, raw=False):
+        q = urllib.parse.quote(path) + ("" if raw else "?stat")
+        with urllib.request.urlopen(urllib.request.Request(f"{API}/filesystem/{q}", headers={"Authorization": auth})) as f:
+            b = f.read()
+        return b.decode() if raw else json.loads(b)
+    def node(d): return d["path"][d["base_index"]]
+    root = f"me/Axion/{device}"
+    bucket = node(get("me/Axion"))["id"]  # shared once by otauploader.sh
+    if beta == "1":
+        folder = "test"
+    else:
+        xs = [c["name"] for c in get(root)["children"] if c["type"] == "dir" and re.fullmatch(r"\d+\.x", c["name"])]
+        if not xs: sys.exit("error: no N.x folder under /%s" % root)
+        folder = max(xs, key=lambda n: int(n.split(".")[0]))
+    zp = re.compile(r"axion-.*-%s\.zip" % re.escape(device))
+    zs = [c for c in get(f"{root}/{folder}")["children"]
+          if c["type"] == "file" and zp.fullmatch(c["name"]) and ("-VANILLA-" in c["name"]) == (flavor == "VANILLA")]
+    if not zs: sys.exit("error: no %s %s zip in /%s/%s" % (flavor, device, root, folder))
+    key = lambda c: ((re.search(r"-(\d{8,14})-", c["name"]) or [0, ""])[1][:8], c.get("created", ""))
+    z = max(zs, key=key)
+    name = z["name"]
+    try: hn, hv = "MD5", get(f"{root}/{folder}/{name}.md5", raw=True).split()[0]
+    except Exception as e:
+        print("no .md5 beside %s (%s); using pixeldrain's SHA256" % (name, e), file=sys.stderr)
+        hn, hv = "SHA256", z.get("sha256_sum") or z["hash_sha256"]
+    url = f"{API}/filesystem/{bucket}/{device}/{folder}/{urllib.parse.quote(name)}"
+    r = dict(filename=name, id=hv, size=z["file_size"], url=url, hn=hn,
+             datetime=datetime.datetime.fromisoformat((z.get("modified") or z["created"]).replace("Z", "+00:00")).timestamp(),
+             version=(re.search(r"axion-([\d.]+)", name) or [0, "?"])[1],
+             romtype="OFFICIAL" if "-OFFICIAL" in name and "UNOFFICIAL" not in name else "UNOFFICIAL")
 n = r["size"]
 for u in ("B", "KB", "MB", "GB"):
     if n < 1024 or u == "GB": break
@@ -123,11 +160,13 @@ v["model"] = "Oneplus 9 Pro" if v["device"] == "lemonadep" else "Oneplus 9"
 t = open(tf, encoding="utf-8").read()
 for k, val in v.items():
     t = t.replace("{%s}" % k, html.escape(str(val)))
+print(v["url"])  # first line = download link, rest = message (split below)
 print("\n".join(l.rstrip() for l in t.rstrip().splitlines()))
 PY
 )
+    MSG=${OUT#*$'\n'}
+    [[ -n $URL ]] || URL=${OUT%%$'\n'*}
     BTN_LABEL="⬇ Download"
-    [[ -n $URL ]] || URL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["response"][-1]["url"])' "$JSON")
 fi
 
 if (( EDIT )); then
