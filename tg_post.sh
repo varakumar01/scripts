@@ -32,7 +32,7 @@ set -euo pipefail
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 [[ -f "$SCRIPT_DIR/.env" ]] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
 
-DEVICE=lemonade FLAVOR=GMS URL="" TEMPLATE="$SCRIPT_DIR/tg_message.txt" NOTES="" MD5="" TEXT="" BUTTON="" BETA=0 CUSTOM=0 EDIT=0 DRY=0 YES=0
+DEVICE=lemonade FLAVOR=GMS URL="" TEMPLATE="$SCRIPT_DIR/tg_message.txt" NOTES="" MD5="" TEXT="" BUTTON="" BETA=0 ROW2=0 CUSTOM=0 EDIT=0 DRY=0 YES=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --device) DEVICE="$2"; shift 2 ;;
@@ -51,6 +51,9 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+CHANGELOG_URL="https://github.com/varakumar01/scripts/blob/aox/OTA/GMS/changelogs_op9.txt"
+COMMUNITY_URL="https://t.me/axionos_op9"
 
 abort() { echo "error: $*" >&2; exit 1; }
 [[ -n "${TG_BOT_TOKEN:-}" && -n "${TG_CHAT_ID:-}" ]] || abort "set TG_BOT_TOKEN and TG_CHAT_ID in $SCRIPT_DIR/.env (see .env.example)"
@@ -168,6 +171,7 @@ PY
     MSG=${OUT#*$'\n'}
     [[ -n $URL ]] || URL=${OUT%%$'\n'*}
     BTN_LABEL="⬇ Download"
+    ROW2=1   # release posts also get Changelog | Community under the Download button
 fi
 
 if (( EDIT )); then
@@ -184,6 +188,7 @@ echo "chat:    $TG_CHAT_ID"
 [[ -f $SCRIPT_DIR/tg_banner.png ]] && echo "image:   tg_banner.png"
 if [[ -n $URL ]]; then
     echo "button:  [$BTN_LABEL] -> $URL"
+    (( ROW2 )) && { echo "button:  [📝 Changelog] -> $CHANGELOG_URL"; echo "         [💬 Community] -> $COMMUNITY_URL   (same row)"; }
     case "$LINK" in 200|206) echo "link:    OK (HTTP $LINK)" ;; *) echo "link:    !! HTTP $LINK -- the button will not work" ;; esac
 else
     echo "button:  (none)"
@@ -196,7 +201,9 @@ if (( ! YES )); then read -rp "Send to Telegram? [y/N] " reply; [[ $reply =~ ^[Y
 
 [[ -n $MSG ]] || abort "empty message"
 EXTRA=()
-[[ -n $URL ]] && EXTRA=(--form-string "reply_markup=$(python3 -c 'import json,sys; print(json.dumps({"inline_keyboard":[[{"text":sys.argv[1],"url":sys.argv[2]}]]}))' "$BTN_LABEL" "$URL")")
+[[ -n $URL ]] && EXTRA=(--form-string "reply_markup=$(python3 -c 'import json,sys; kb=[[{"text":sys.argv[1],"url":sys.argv[2]}]]
+if sys.argv[3]=="1": kb.append([{"text":"📝 Changelog","url":sys.argv[4]},{"text":"💬 Community","url":sys.argv[5]}])
+print(json.dumps({"inline_keyboard":kb}))' "$BTN_LABEL" "$URL" "$ROW2" "$CHANGELOG_URL" "$COMMUNITY_URL")")
 # Banner goes out as a photo with the message as its caption (1024-char limit,
 # so longer messages fall back to plain text). tg_banner.png is a 1920px copy of
 # axion.png: sendPhoto rejects files over 10 MB.
