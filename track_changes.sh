@@ -1223,6 +1223,27 @@ switch_manifest() {
   # relative target, so the link survives the tree being moved or copied
   ln -sfn "$(realpath --relative-to=.repo/local_manifests "$src")" "$dest"
   echo "${C_GREEN}==> local_manifest.xml -> $src${C_RESET}"
+
+  # repo refuses a path defined twice ("duplicate path ... in manifest.xml").
+  # lunch/breakfast writes roomservice.xml entries for a device whose tree was
+  # missing at the time; once $src provides the same path, drop them there.
+  local other p dups
+  for other in .repo/local_manifests/*.xml; do
+    [[ "$other" -ef "$dest" ]] && continue
+    dups="$(grep -oE '<project[^>]*\bpath="[^"]+"' "$other" | sed -E 's/.*path="([^"]+)".*/\1/' \
+              | grep -xFf <(parse_local_manifest_paths) || true)"
+    [[ -z "$dups" ]] && continue
+    if [[ "$(basename "$other")" == roomservice.xml ]]; then
+      cp "$other" "$other.bak"
+      while IFS= read -r p; do
+        sed -i "\\|<project[^>]*path=\"$p\"|d" "$other"
+      done <<< "$dups"
+      echo "${C_YELLOW}==> removed from $other (copy in $other.bak), already in $dev.xml:${C_RESET}"
+    else
+      echo "${C_RED}==> $other defines paths that $dev.xml also defines — repo will fail with 'duplicate path' until they are removed from one of them:${C_RESET}"
+    fi
+    sed 's/^/      /' <<< "$dups"
+  done
 }
 
 # ---------------------------------------------------------------------
