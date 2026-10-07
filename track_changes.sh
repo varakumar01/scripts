@@ -476,6 +476,14 @@ cmd_clean_src() {
 clean_project() {
   local path="$1" name
   name="$(project_name_for "$path")"
+  # local_manifest.xml is a symlink into this project (see --device): with the
+  # project gone repo cannot parse the manifest, so it could never be re-synced.
+  local manifest_target
+  manifest_target="$(readlink -f .repo/local_manifests/local_manifest.xml 2>/dev/null)"
+  if [[ "$manifest_target" == "$(readlink -f "./${path}")"/* ]]; then
+    echo "${C_RED}==> not wiping '$path': .repo/local_manifests/local_manifest.xml points into it${C_RESET}"
+    return 1
+  fi
   echo "${C_YELLOW}==> force: wiping local copy of '$path' (${name}) before resync${C_RESET}"
   rm -rf -- "./${path}"
   if [[ "$REPO_MODE" == "repo" ]]; then
@@ -1212,7 +1220,8 @@ switch_manifest() {
     mv "$dest" "$dest.bak"
     echo "${C_YELLOW}==> existing $dest was a regular file — saved as $dest.bak${C_RESET}"
   fi
-  ln -sfn "$src" "$dest"
+  # relative target, so the link survives the tree being moved or copied
+  ln -sfn "$(realpath --relative-to=.repo/local_manifests "$src")" "$dest"
   echo "${C_GREEN}==> local_manifest.xml -> $src${C_RESET}"
 }
 
