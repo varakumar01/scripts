@@ -20,9 +20,6 @@
 <!-- Advanced protection settings app (included here) -->
 <project name="varakumar01/PrivacySettings" path="packages/apps/PrivacySettings" revision="aox" remote="github" />
 
-<!-- Pixel Launcher as the default home (included here) -->
-<project name="varakumar01/vendor_pixel-launcher" path="vendor/pixel-launcher" revision="aox" remote="github" />
-
 <!-- codesgning-->
 <project name="varakumar01/vendor_aox-priv_keys-template" path="vendor/lineage-priv/keys" revision="aox" remote="github" />
 
