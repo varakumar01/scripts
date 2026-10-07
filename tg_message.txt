@@ -1,11 +1,11 @@
 <b>New AxionOS {beta}Build v{version} for {model} ({device}) is Up!</b>
 By <a href="https://t.me/Varakumar">T๏иy</a>
 
-▫️ <b>Version:</b> {version}
+▫️ <b>Version:</b> v{version}
 ▫️ <b>Size:</b> {size}
 ▫️ <b>Date:</b> {longdate}
 ▫️ <b>{hashname}:</b> <code>{hash}</code>
 
 <i>Note: Newer OOS Cam v5.045.451</i>
 
-#Android16 #{device} @axionos_op9 #Axion #LevionKernel
+#A16 #{device} #Axion #LevionKernel
