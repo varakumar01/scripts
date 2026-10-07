@@ -171,7 +171,7 @@ PY
     MSG=${OUT#*$'\n'}
     [[ -n $URL ]] || URL=${OUT%%$'\n'*}
     BTN_LABEL="⬇ Download"
-    ROW2=1   # release posts also get Changelog | Community under the Download button
+    ROW2=1   # release posts also get Changelog | Community above the Download button
 fi
 
 if (( EDIT )); then
@@ -187,8 +187,8 @@ echo "bot:     $BOT"
 echo "chat:    $TG_CHAT_ID"
 [[ -f $SCRIPT_DIR/tg_banner.png ]] && echo "image:   tg_banner.png"
 if [[ -n $URL ]]; then
+    (( ROW2 )) && { echo "button:  [📝 Changelog] -> $CHANGELOG_URL"; echo "         [💬 Community] -> $COMMUNITY_URL   (same row, above Download)"; }
     echo "button:  [$BTN_LABEL] -> $URL"
-    (( ROW2 )) && { echo "button:  [📝 Changelog] -> $CHANGELOG_URL"; echo "         [💬 Community] -> $COMMUNITY_URL   (same row)"; }
     case "$LINK" in 200|206) echo "link:    OK (HTTP $LINK)" ;; *) echo "link:    !! HTTP $LINK -- the button will not work" ;; esac
 else
     echo "button:  (none)"
@@ -202,7 +202,7 @@ if (( ! YES )); then read -rp "Send to Telegram? [y/N] " reply; [[ $reply =~ ^[Y
 [[ -n $MSG ]] || abort "empty message"
 EXTRA=()
 [[ -n $URL ]] && EXTRA=(--form-string "reply_markup=$(python3 -c 'import json,sys; kb=[[{"text":sys.argv[1],"url":sys.argv[2]}]]
-if sys.argv[3]=="1": kb.append([{"text":"📝 Changelog","url":sys.argv[4]},{"text":"💬 Community","url":sys.argv[5]}])
+if sys.argv[3]=="1": kb.insert(0,[{"text":"📝 Changelog","url":sys.argv[4]},{"text":"💬 Community","url":sys.argv[5]}])
 print(json.dumps({"inline_keyboard":kb}))' "$BTN_LABEL" "$URL" "$ROW2" "$CHANGELOG_URL" "$COMMUNITY_URL")")
 # Banner goes out as a photo with the message as its caption (1024-char limit,
 # so longer messages fall back to plain text). tg_banner.png is a 1920px copy of
