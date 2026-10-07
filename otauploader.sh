@@ -19,6 +19,9 @@
 #   ./otauploader.sh --device lemonadep # override autodetection for a specific device
 #   ./otauploader.sh -au                # same, but skip the summary prompt
 #                                        #   (a brand-new version folder still prompts)
+#   ./otauploader.sh --beta             # test build: upload straight to <device>/test/
+#                                        #   (+ test/recovery/), no version-folder logic,
+#                                        #   no firmware copy, no OTA manifest
 #   ./otauploader.sh --dry-run          # parse + build the upload plan and the
 #                                        #   OTA manifest, print both, never connect
 #   ./otauploader.sh -pd ls [path]      # browse the pixeldrain filesystem read-only
@@ -48,6 +51,7 @@ PIXELDRAIN_RETENTION="${PIXELDRAIN_RETENTION:-3}"
 
 AUTO=0
 DRY_RUN=0
+BETA=0
 DO_SF=0
 DO_PD=0
 PD_CMD=""
@@ -56,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --auto-upload|-au) AUTO=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
+        --beta) BETA=1; shift ;;
         --device) DEVICE="$2"; shift 2 ;;
         --sourceforge|-sf) DO_SF=1; shift ;;
         --pixeldrain|-pd)
@@ -65,7 +70,7 @@ while [[ $# -gt 0 ]]; do
             esac
             ;;
         --help|-h)
-            sed -n '2,33p' "$0"; exit 0 ;;
+            sed -n '2,36p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -263,6 +268,7 @@ SSH_OPTS=(-o "ControlMaster=auto" -o "ControlPersist=60" -o "ControlPath=$SSH_CT
 
 cleanup() {
     rm -f "${BATCH:-}" "${PRUNE_LIST:-}"
+    rm -rf "${MD5_DIR:-}"
     [[ $DO_SF -eq 1 ]] && { ssh -O exit "${SSH_OPTS[@]}" "$SF_USER@$SF_HOST" 2>/dev/null || true; }
     rm -rf "$SSH_CTL_DIR"
     unset SSHPASS PIXELDRAIN_API_KEY
@@ -288,6 +294,7 @@ ROM=$(find "out/target/product/$DEVICE" -maxdepth 1 -type f \
 base=${ROM##*/}
 ver=${base#axion-}; ver=${ver%%-*}          # 2.8
 verdir="${ver%%.*}.x"                       # 2.x
+(( BETA )) && verdir="test"                 # --beta: no version logic, always test/
 
 [[ $base =~ -([0-9]{8,14})- ]] || abort "couldn't find an 8-14 digit date segment in $base"
 date=${BASH_REMATCH[1]:0:8}                 # truncate the time-of-day variant to YYYYMMDD
@@ -309,10 +316,28 @@ for img in "${IMAGES[@]}"; do
     fi
 done
 
+# --- 3b. md5 sidecars: one <remote name>.md5 per file, uploaded beside it ----
+# The ROM reuses the .md5 build.sh wrote next to the zip when it's still
+# fresh; everything else (and a stale/missing ROM one) is hashed here.
+MD5_DIR=$(mktemp -d)
+n_files=${#LOCAL_FILES[@]}
+for (( i=0; i<n_files; i++ )); do
+    f="${LOCAL_FILES[$i]}"; rn="${REMOTE_NAMES[$i]}"
+    if [[ $i -eq 0 && -f "$f.md5" && "$f.md5" -nt "$f" ]]; then
+        h=$(awk '{print $1; exit}' "$f.md5")
+    else
+        h=$(md5sum "$f" | awk '{print $1}')
+    fi
+    echo "$h  $rn" > "$MD5_DIR/$rn.md5"
+    LOCAL_FILES+=("$MD5_DIR/$rn.md5"); REMOTE_NAMES+=("$rn.md5"); REMOTE_DIRS+=("${REMOTE_DIRS[$i]}")
+done
+
 # --- 4. probe remotes: does the version folder already exist? --------------
 SF_NEW_FOLDER=0
 if [[ $DO_SF -eq 1 ]]; then
-    if [[ $DRY_RUN -eq 1 ]]; then
+    if (( BETA )); then
+        [[ $DRY_RUN -eq 1 ]] || open_master   # test/ is never "new": no prompt, no firmware
+    elif [[ $DRY_RUN -eq 1 ]]; then
         SF_NEW_FOLDER=1   # can't know without connecting; assume worst case for the preview
     else
         open_master
@@ -322,7 +347,7 @@ if [[ $DO_SF -eq 1 ]]; then
 fi
 
 PD_NEW_FOLDER=0
-if [[ $DO_PD -eq 1 ]]; then
+if [[ $DO_PD -eq 1 && $BETA -eq 0 ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
         PD_NEW_FOLDER=1   # never connect during --dry-run, same rule as SourceForge above
     else
@@ -362,7 +387,9 @@ DL_URL="https://downloads.sourceforge.net/project/$SF_PROJECT/$DEVICE/$verdir/$b
 OUT_JSON="$SCRIPT_DIR/OTA/$FLAVOR/$DEVICE.json"
 
 MANIFEST=""
-if [[ -f "$SRC_JSON" ]]; then
+if (( BETA )); then
+    :   # beta builds never reach the Updater app
+elif [[ -f "$SRC_JSON" ]]; then
     MANIFEST=$(sed 's|"url":[[:space:]]*".*"|"url": "'"$DL_URL"'"|' "$SRC_JSON")
 else
     echo "warning: $SRC_JSON not found — skipping OTA manifest publish (was this built with 'm bacon'?)" >&2
@@ -377,7 +404,7 @@ echo
 targets=()
 [[ $DO_SF -eq 1 ]] && targets+=("SourceForge")
 [[ $DO_PD -eq 1 ]] && targets+=("pixeldrain")
-echo "OTA upload (${targets[*]}) — Axion $ver ($date)"
+echo "OTA upload (${targets[*]}) — Axion $ver ($date)$( (( BETA )) && echo ' [BETA -> test/, no manifest]')"
 echo
 
 if [[ $DO_SF -eq 1 && $SF_NEW_FOLDER -eq 1 ]]; then
@@ -477,44 +504,55 @@ pd_bucket_id() {
 }
 
 pd_prune_old_builds() {
-    local dir_path="$PD_BASE/$verdir" listing
+    local dir_path="$PD_BASE/$verdir" listing rec
     listing=$(pd "$PD_API/filesystem/$(pd_urlpath "$dir_path")?stat")
+    rec=$(pd "$PD_API/filesystem/$(pd_urlpath "$dir_path/recovery")?stat" 2>/dev/null || echo '{}')
     PRUNE_LIST=$(mktemp)
-    # Only "file" nodes whose name is this exact device's ROM zip pattern can
-    # ever be listed here -- recovery/, firmware/, .search_index.gz and any
-    # other device's builds never match, so pruning can't touch them.
+    # Only this device's ROM zips (+ their .md5) and recovery/<YYYYMMDD>_* files
+    # can ever be listed -- firmware/, .search_index.gz and any other device's
+    # builds never match. Recovery files go when their date isn't the date of a
+    # kept zip. Output: <path relative to dir_path>\t<date>\t<size>.
     python3 -c "
 import json, re, sys
-d = json.load(sys.stdin)
+d, rec = json.loads(sys.argv[3]), json.loads(sys.argv[4])
 device, keep = sys.argv[1], int(sys.argv[2])
 pat = re.compile(r'^axion-.*-' + re.escape(device) + r'\.zip\$')
 datepat = re.compile(r'-(\d{8,14})-')
-files = []
+files, names = [], set()
 for c in d.get('children', []):
     if c.get('type') != 'file':
         continue
+    names.add(c['name'])
     if not pat.match(c['name']):
         continue
     dm = datepat.search(c['name'])
     files.append(((dm.group(1)[:8] if dm else ''), c.get('created', ''), c['name'], c.get('file_size', 0)))
 files.sort(reverse=True)  # newest date first
+kept = {f[0] for f in files[:keep]}
+sizes = {c['name']: c.get('file_size', 0) for c in d.get('children', [])}
 for d_, created, name, size in files[keep:]:
     print(f'{name}\t{d_}\t{size}')
-" "$DEVICE" "$PIXELDRAIN_RETENTION" <<<"$listing" > "$PRUNE_LIST"
+    if name + '.md5' in names:
+        print(f'{name}.md5\t{d_}\t{sizes[name + \".md5\"]}')
+for c in rec.get('children', []):
+    m = re.match(r'^(\d{8})_', c['name'])
+    if c.get('type') == 'file' and m and m.group(1) not in kept:
+        print(f'recovery/{c[\"name\"]}\t{m.group(1)}\t{c.get(\"file_size\", 0)}')
+" "$DEVICE" "$PIXELDRAIN_RETENTION" "$listing" "$rec" > "$PRUNE_LIST"
 
     [[ -s $PRUNE_LIST ]] || return 0
     echo
-    echo "pixeldrain retention — $(wc -l < "$PRUNE_LIST") build(s) beyond the newest $PIXELDRAIN_RETENTION in /$dir_path/:"
+    echo "pixeldrain retention — $(wc -l < "$PRUNE_LIST") file(s) beyond the newest $PIXELDRAIN_RETENTION build(s) in /$dir_path/:"
     while IFS=$'\t' read -r name pdate size; do
         printf '  will delete: %-60s (%s, %s)\n' "$name" "$pdate" "$(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "${size}B")"
     done < "$PRUNE_LIST"
 
     if [[ $AUTO -eq 0 ]]; then
-        read -rp "Delete these old build(s) from pixeldrain? [y/N] " reply
+        read -rp "Delete these old file(s) from pixeldrain? [y/N] " reply
         [[ $reply =~ ^[Yy]$ ]] || { echo "skipped pixeldrain retention."; return 0; }
     fi
     while IFS=$'\t' read -r name pdate size; do
-        pd -X DELETE "$PD_API/filesystem/$(pd_urlpath "$dir_path")/$(urlenc "$name")" >/dev/null
+        pd -X DELETE "$PD_API/filesystem/$(pd_urlpath "$dir_path/$name")" >/dev/null
         echo "  deleted: $name"
     done < "$PRUNE_LIST"
 }
