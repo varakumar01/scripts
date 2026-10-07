@@ -358,14 +358,14 @@ publish_zip() {
     cp "$zip" "$WEB_ROOT/${final_name}.part"
     mv "$WEB_ROOT/${final_name}.part" "$WEB_ROOT/${final_name}"
 
-    local sha
-    sha="$(sha256sum "$WEB_ROOT/${final_name}" | awk '{print $1}')"
-    echo "$sha  ${final_name}" > "$WEB_ROOT/${final_name}.sha256"
-    chmod 644 "$WEB_ROOT/${final_name}" "$WEB_ROOT/${final_name}.sha256"
+    local md5
+    md5="$(md5sum "$WEB_ROOT/${final_name}" | awk '{print $1}')"
+    echo "$md5  ${final_name}" > "$WEB_ROOT/${final_name}.md5"
+    chmod 644 "$WEB_ROOT/${final_name}" "$WEB_ROOT/${final_name}.md5"
 
     PUBLISHED_NAME="$final_name"
     PUBLISHED_SIZE="$size"
-    PUBLISHED_SHA="$sha"
+    PUBLISHED_MD5="$md5"
     PUBLISHED_URL="${DOWNLOAD_BASE_URL}/${final_name}"
     return 0
 }
@@ -446,11 +446,17 @@ elapsed=$(( end_ts - start_ts ))
 
 PUBLISHED_NAME=""
 PUBLISHED_SIZE=""
-PUBLISHED_SHA=""
+PUBLISHED_MD5=""
 PUBLISHED_URL=""
 
+zip="$(find_output_zip)"
+# Sidecar next to the built zip -- otauploader.sh picks this one up.
+if [[ -n "$zip" && -f "$zip" ]]; then
+    log_tagged MD5 "writing ${zip##*/}.md5"
+    ( cd "$(dirname "$zip")" && md5sum "$(basename "$zip")" > "$(basename "$zip").md5" )
+fi
+
 if [[ "$DO_PUBLISH" -eq 1 ]]; then
-    zip="$(find_output_zip)"
     publish_zip "$zip"
 fi
 
@@ -463,7 +469,7 @@ fi
     printf 'Elapsed      : %02d:%02d:%02d\n' $((elapsed/3600)) $((elapsed%3600/60)) $((elapsed%60))
     if [[ -n "$PUBLISHED_NAME" ]]; then
         echo "Zip          : $PUBLISHED_NAME ($(human_size "$PUBLISHED_SIZE"))"
-        echo "SHA256       : $PUBLISHED_SHA"
+        echo "MD5          : $PUBLISHED_MD5"
         echo "Download URL : $PUBLISHED_URL"
     else
         echo "Publish      : skipped or failed — see log above"
