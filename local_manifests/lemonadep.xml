@@ -22,7 +22,9 @@
 
 <!-- OpenEUICC (eSIM profile manager for removable eUICC cards) and its prebuilt dependencies -->
 <remote name="angry" fetch="https://gitea.angry.im/PeterCxy/" />
-<project name="OpenEUICC" path="packages/apps/OpenEUICC" revision="89d677e07d0ebbd2d157ede2cb31f76aec737e3a" remote="angry" sync-s="true" />
+<project name="OpenEUICC" path="packages/apps/OpenEUICC" revision="89d677e07d0ebbd2d157ede2cb31f76aec737e3a" remote="angry" />
+<project name="estkme-group/lpac" path="packages/apps/OpenEUICC/libs/lpac-jni/src/main/jni/lpac" revision="50cdf15ab40942b00f8819a1c2ca19997f1a6d34" remote="github" />
+<project name="DaveGamble/cJSON" path="packages/apps/OpenEUICC/libs/lpac-jni/src/main/jni/cjson/cjson" revision="6d9f2443ab071f86e5d9b43025a40929ec41c46c" remote="github" />
 <project name="android_prebuilts_openeuicc-deps" path="prebuilts/openeuicc-deps" revision="540216793010cabc49782bd01844cd8dd28a4c7c" remote="angry" />
 
 <!-- codesgning-->
