@@ -20,6 +20,13 @@
 #   ./otauploader.sh --beta             # test build: upload straight to <device>/test/
 #                                        #   (+ test/recovery/), no version-folder logic,
 #                                        #   no firmware copy, no OTA manifest
+#   ./otauploader.sh --device lemonade -pd --sync-state [--beta]
+#                                        # upload only repo-sync-logs/synced_state.txt
+#                                        #   (written by track_changes.sh --save-state) to
+#                                        #   pixeldrain: <device>/test/ with --beta, else the
+#                                        #   newest <N>.x folder. The file it replaces is kept
+#                                        #   as synced_state.txt.bak (two files per folder).
+#                                        #   A normal -pd build upload does the same.
 #   ./otauploader.sh --dry-run          # parse + build the upload plan and the
 #                                        #   OTA manifest, print both, never connect
 #   ./otauploader.sh -pd ls [path]      # browse the pixeldrain filesystem read-only
@@ -31,6 +38,7 @@
 #   ./otauploader.sh -pd mv <src> <dst>      # move/rename (dst may be an existing dir)
 #   ./otauploader.sh -pd -u <file> <dst>     # upload a local file (dst may be a dir or a full path)
 #   ./otauploader.sh -pd cp <src> <dst>      # copy a file (downloaded + re-uploaded)
+#   ./otauploader.sh -pd get <src> [local]   # download a file (default: its own name, here)
 #                                        #   all paths are relative to /me
 set -euo pipefail
 
@@ -43,6 +51,8 @@ DEVICE=""   # required: --device <name>
 IMAGES=(boot.img vendor_boot.img vbmeta.img dtbo.img vendor_dlkm.img super_empty.img)
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 FIRMWARE_SRC="$SCRIPT_DIR/firmware"
+STATE_NAME="synced_state.txt"
+STATE_FILE="repo-sync-logs/$STATE_NAME"   # track_changes.sh --save-state, relative to the build root
 
 [[ -f "$SCRIPT_DIR/.env" ]] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
 PIXELDRAIN_RETENTION="${PIXELDRAIN_RETENTION:-3}"
@@ -50,6 +60,7 @@ PIXELDRAIN_RETENTION="${PIXELDRAIN_RETENTION:-3}"
 AUTO=0
 DRY_RUN=0
 BETA=0
+SYNC_STATE_ONLY=0
 DO_SF=0
 DO_PD=0
 PD_CMD=""
@@ -59,16 +70,17 @@ while [[ $# -gt 0 ]]; do
         --auto-upload|-au) AUTO=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --beta) BETA=1; shift ;;
+        --sync-state) SYNC_STATE_ONLY=1; shift ;;
         --device) DEVICE="$2"; shift 2 ;;
         --sourceforge|-sf) DO_SF=1; shift ;;
         --pixeldrain|-pd)
             case "${2:-}" in
-                ls|mkdir|rm|rmdir|cp|mv|up|-u) PD_CMD="$2"; shift 2; PD_ARGS=("$@"); break ;;
+                ls|mkdir|rm|rmdir|cp|mv|get|up|-u) PD_CMD="$2"; shift 2; PD_ARGS=("$@"); break ;;
                 *) DO_PD=1; shift ;;
             esac
             ;;
         --help|-h)
-            sed -n '2,34p' "$0"; exit 0 ;;
+            sed -n '2,42p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -236,6 +248,9 @@ pd_cmd() {
             echo "cp: downloading /$src ..."
             pd -o "$tmp" "$(pd_url "$src")" || abort "pixeldrain: cp: download of /$src failed"
             pd_run "cp /$src -> /$dst" -X PUT --upload-file "$tmp" "$(pd_url "$dst")?make_parents=true" ;;
+        get)
+            [[ $# -ge 1 && $# -le 2 ]] || abort "usage: -pd get <src> [local]"
+            pd_run "get /$(pd_norm "$1") -> ${2:-$(basename "$1")}" -o "${2:-$(basename "$1")}" "$(pd_url "$1")" ;;
     esac
 }
 
@@ -246,6 +261,44 @@ fi
 
 SF_BASE="/home/frs/project/$SF_PROJECT/$DEVICE"
 PD_BASE="me/$PD_ROOT/$DEVICE"   # path under the pixeldrain filesystem API, minus version dir
+
+# pd_put_state <verdir> -- upload $STATE_FILE as <verdir>/synced_state.txt. The
+# file already there becomes synced_state.txt.bak (replacing the previous
+# .bak), so each folder holds exactly two: the current state and the one before.
+pd_put_state() {
+    local dir="$PD_BASE/$1" url
+    url="$PD_API/filesystem/$(pd_urlpath "$dir/$STATE_NAME")"
+    if pd "$url?stat" >/dev/null 2>&1; then
+        pd -X DELETE "$url.bak" >/dev/null 2>&1 || true
+        pd -F action=rename -F "target=/$dir/$STATE_NAME.bak" "$url" >/dev/null
+    fi
+    pd -X PUT --upload-file "$STATE_FILE" "$url?make_parents=true" >/dev/null
+    echo "synced state uploaded: /$dir/$STATE_NAME ($(sed -n 's/^# tag: //p' "$STATE_FILE"))"
+}
+
+if (( SYNC_STATE_ONLY )); then
+    (( DO_PD )) || abort "--sync-state uploads to pixeldrain: pass -pd"
+    [[ -f $STATE_FILE ]] || abort "$STATE_FILE not found — run track_changes.sh --save-state [tag] from the build root first"
+    if (( BETA )); then
+        verdir="test"
+    elif (( DRY_RUN )); then
+        verdir="<newest N.x>"   # never connect during --dry-run
+    else
+        # newest <N>.x folder this device already has
+        verdir=$(pd "$PD_API/filesystem/$(pd_urlpath "$PD_BASE")?stat" | python3 -c '
+import json, re, sys
+d = json.load(sys.stdin)
+v = [c["name"] for c in d.get("children", []) if c.get("type") == "dir" and re.fullmatch(r"\d+\.x", c["name"])]
+print(max(v, key=lambda n: int(n[:-2])) if v else "")') || abort "pixeldrain: could not list /$PD_BASE"
+        [[ -n $verdir ]] || abort "no <N>.x folder under /$PD_BASE yet — upload a build first, or pass --beta"
+    fi
+    if (( DRY_RUN )); then
+        echo "--dry-run: would upload $STATE_FILE -> pixeldrain:/$PD_BASE/$verdir/$STATE_NAME (existing one -> $STATE_NAME.bak)"
+        exit 0
+    fi
+    pd_put_state "$verdir"
+    exit 0
+fi
 
 [[ -d out/target/product/$DEVICE ]] || abort "out/target/product/$DEVICE not found — run this from the build root"
 
@@ -441,6 +494,7 @@ done
 echo
 echo "Total: ${#LOCAL_FILES[@]} files, $human_total"
 [[ $DO_PD -eq 1 ]] && echo "pixeldrain retention: keep newest $PIXELDRAIN_RETENTION build(s) per device/version dir"
+[[ $DO_PD -eq 1 && -f $STATE_FILE ]] && echo "synced state: $STATE_FILE -> pixeldrain:/$PD_BASE/$verdir/$STATE_NAME (existing one -> $STATE_NAME.bak)"
 echo
 
 if [[ $DRY_RUN -eq 1 ]]; then
@@ -563,6 +617,7 @@ if [[ $DO_PD -eq 1 ]]; then
         done
     fi
     echo "done."
+    [[ -f $STATE_FILE ]] && pd_put_state "$verdir"
 
     pd_prune_old_builds
 
