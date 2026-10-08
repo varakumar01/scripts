@@ -14,8 +14,8 @@
 #   ./reposcan.sh -t7 | -t7-9 [-v]          -> commit activity, no sync
 #   ./reposcan.sh --date 10/08/26[-DD/MM/YY] [-v]
 #   ./reposcan.sh --report [N|list]        -> view a saved sync log
-#   ./reposcan.sh -ss [tag]                -> save every project's HEAD to synced_state.txt
-#   ./reposcan.sh -rs [file]               -> check the tree out at a saved state
+#   ./reposcan.sh -ss [tag] [--beta] [--local]         -> save every project's HEAD, upload to pixeldrain
+#   ./reposcan.sh -rs [file] [--beta] [--bak] [--local] -> download the saved state, check the tree out at it
 #   ./reposcan.sh --list                   -> list discovered repos
 #   ./reposcan.sh -re path/to/File.kt      -> which remote repo owns this file
 #
@@ -117,18 +117,26 @@ COMMANDS:
         straight to the screen — no new file is written. Default N=1
         shows the most recent log. Use 'list' to see all saved logs.
 
-  ${C_GREEN}-ss, --save-state${C_RESET} [tag]
+  ${C_GREEN}-ss, --save-state${C_RESET} [tag] [--beta] [--local]
         Record every project's current HEAD in
         ${LOG_DIR}/synced_state.txt (path, commit, upstream name), with
         [tag] and the date in its header. One file, replaced each time
         this is run — run it when the tree is in a state worth
         remembering (e.g. right after the sync a build was made from).
-        'otauploader.sh -pd' uploads it next to the build;
-        'otauploader.sh -pd --sync-state [--beta]' uploads it on its own.
+        Then uploads it to pixeldrain through otauploader.sh
+        (--sync-state): <device>/test/ with --beta, else the newest
+        <N>.x folder; the file it replaces there is kept as .bak. The
+        device is the one --device linked the local manifest to.
+        --local saves the file and skips the upload. A failed upload
+        leaves the local file in place.
 
-  ${C_GREEN}-rs, --restore-state${C_RESET} [file]
-        Put the tree back at a saved state (default file:
-        ${LOG_DIR}/synced_state.txt). Lists every project whose HEAD
+  ${C_GREEN}-rs, --restore-state${C_RESET} [file] [--beta] [--bak] [--local]
+        Put the tree back at a saved state. With no [file], first
+        downloads the state from pixeldrain (same folder choice as
+        --save-state; --bak takes the previous one) into
+        ${LOG_DIR}/synced_state.txt, keeping a local one as .bak; if
+        the download fails, the local file is used. With [file] or
+        --local nothing is downloaded. Lists every project whose HEAD
         differs from the recorded commit, with how many commits it is
         ahead/behind, asks once, then runs 'git checkout --detach
         <commit>' in each. Commits made since are no longer checked
@@ -172,7 +180,10 @@ EXAMPLES:
   ${SCRIPT_NAME} --report list
   ${SCRIPT_NAME} --report 2
   ${SCRIPT_NAME} --save-state 3.1-20261008
+  ${SCRIPT_NAME} --save-state test-64bit --beta
   ${SCRIPT_NAME} --restore-state
+  ${SCRIPT_NAME} --restore-state --beta --bak
+  ${SCRIPT_NAME} --restore-state --local
   ${SCRIPT_NAME} --restore-state ~/Downloads/synced_state.txt.bak
   ${SCRIPT_NAME} --list
   ${SCRIPT_NAME} -re ax_deviceinfo/src/com/android/axion/deviceinfo/DeviceInfoProvider.kt
@@ -1331,8 +1342,29 @@ cmd_sync_dts() {
 # ---------------------------------------------------------------------
 STATE_FILE="${LOG_DIR}/synced_state.txt"
 
+# state_pd <otauploader args...> -- run otauploader.sh's --sync-state for the
+# device the local manifest is linked to. Fails (without aborting the caller)
+# when the device can't be told or otauploader.sh does.
+state_pd() {
+  local dev
+  dev="$(basename "$(readlink -f .repo/local_manifests/local_manifest.xml 2>/dev/null)" .xml)"
+  if [[ -z "$dev" || "$dev" == local_manifest ]]; then
+    echo "${C_YELLOW}==> pixeldrain skipped: no device linked — run '${SCRIPT_NAME} --device <name>' first${C_RESET}" >&2
+    return 1
+  fi
+  "$SCRIPT_DIR/otauploader.sh" --device "$dev" -pd --sync-state "$@"
+}
+
 cmd_save_state() {
-  local tag="${1:-}"
+  local tag="" local_only=0 a
+  local -a pd_args=()
+  for a in "$@"; do
+    case "$a" in
+      --beta) pd_args+=(--beta) ;;
+      --local) local_only=1 ;;
+      *) tag="$a" ;;
+    esac
+  done
   discover_repos
   if [[ "${#REPO_PATHS[@]}" -eq 0 ]]; then
     echo "${C_RED}error: no repositories found (looked for .repo/ or nested .git/ dirs)${C_RESET}"
@@ -1353,10 +1385,26 @@ cmd_save_state() {
   } > "$STATE_FILE"
   rm -f "$snap"
   echo "${C_GREEN}==> saved ${#REPO_PATHS[@]} project HEADs to ${STATE_FILE}${C_RESET} (tag: ${tag:--})"
+  (( local_only )) && return 0
+  state_pd "${pd_args[@]}" || echo "${C_YELLOW}==> not uploaded — the local file is kept; retry with 'otauploader.sh --device <name> -pd --sync-state'${C_RESET}" >&2
 }
 
 cmd_restore_state() {
-  local file="${1:-$STATE_FILE}"
+  local file="" local_only=0 a
+  local -a pd_args=(--get)
+  for a in "$@"; do
+    case "$a" in
+      --beta|--bak) pd_args+=("$a") ;;
+      --local) local_only=1 ;;
+      *) file="$a" ;;
+    esac
+  done
+  if [[ -z "$file" ]]; then
+    file="$STATE_FILE"
+    if (( ! local_only )); then
+      state_pd "${pd_args[@]}" || echo "${C_YELLOW}==> not downloaded — using the local ${STATE_FILE}${C_RESET}" >&2
+    fi
+  fi
   [[ -f "$file" ]] || { echo "${C_RED}no state file at $file — run '${SCRIPT_NAME} --save-state' first, or pass a file${C_RESET}" >&2; return 2; }
   echo "${C_BOLD}==> Restoring state from ${file}${C_RESET}"
   grep -E '^# (tag|date|manifest):' "$file" | sed 's/^# /    /'
@@ -1472,11 +1520,11 @@ main() {
       ;;
     -ss|--save-state)
       shift
-      cmd_save_state "${1:-}"
+      cmd_save_state "$@"
       ;;
     -rs|--restore-state)
       shift
-      cmd_restore_state "${1:-}"
+      cmd_restore_state "$@"
       ;;
     -re|--repo)
       shift
