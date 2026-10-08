@@ -20,6 +20,11 @@
 <!-- Advanced protection settings app (included here) -->
 <project name="varakumar01/PrivacySettings" path="packages/apps/PrivacySettings" revision="aox" remote="github" />
 
+<!-- OpenEUICC (eSIM profile manager for removable eUICC cards) and its prebuilt dependencies -->
+<remote name="angry" fetch="https://gitea.angry.im/PeterCxy/" />
+<project name="OpenEUICC" path="packages/apps/OpenEUICC" revision="89d677e07d0ebbd2d157ede2cb31f76aec737e3a" remote="angry" sync-s="true" />
+<project name="android_prebuilts_openeuicc-deps" path="prebuilts/openeuicc-deps" revision="540216793010cabc49782bd01844cd8dd28a4c7c" remote="angry" />
+
 <!-- codesgning-->
 <project name="varakumar01/vendor_aox-priv_keys-template" path="vendor/lineage-priv/keys" revision="aox" remote="github" />
 
