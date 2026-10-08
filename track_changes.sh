@@ -14,6 +14,8 @@
 #   ./reposcan.sh -t7 | -t7-9 [-v]          -> commit activity, no sync
 #   ./reposcan.sh --date 10/08/26[-DD/MM/YY] [-v]
 #   ./reposcan.sh --report [N|list]        -> view a saved sync log
+#   ./reposcan.sh -ss [tag]                -> save every project's HEAD to synced_state.txt
+#   ./reposcan.sh -rs [file]               -> check the tree out at a saved state
 #   ./reposcan.sh --list                   -> list discovered repos
 #   ./reposcan.sh -re path/to/File.kt      -> which remote repo owns this file
 #
@@ -115,6 +117,25 @@ COMMANDS:
         straight to the screen — no new file is written. Default N=1
         shows the most recent log. Use 'list' to see all saved logs.
 
+  ${C_GREEN}-ss, --save-state${C_RESET} [tag]
+        Record every project's current HEAD in
+        ${LOG_DIR}/synced_state.txt (path, commit, upstream name), with
+        [tag] and the date in its header. One file, replaced each time
+        this is run — run it when the tree is in a state worth
+        remembering (e.g. right after the sync a build was made from).
+        'otauploader.sh -pd' uploads it next to the build;
+        'otauploader.sh -pd --sync-state [--beta]' uploads it on its own.
+
+  ${C_GREEN}-rs, --restore-state${C_RESET} [file]
+        Put the tree back at a saved state (default file:
+        ${LOG_DIR}/synced_state.txt). Lists every project whose HEAD
+        differs from the recorded commit, with how many commits it is
+        ahead/behind, asks once, then runs 'git checkout --detach
+        <commit>' in each. Commits made since are no longer checked
+        out but are not deleted (still on their branch / in the
+        reflog). A project with uncommitted changes that conflict is
+        reported and left alone.
+
   ${C_GREEN}-l, --list${C_RESET}
         List every repo/project discovered in the current tree.
 
@@ -150,6 +171,9 @@ EXAMPLES:
   ${SCRIPT_NAME} --date 05/08/26-10/08/26 -v
   ${SCRIPT_NAME} --report list
   ${SCRIPT_NAME} --report 2
+  ${SCRIPT_NAME} --save-state 3.1-20261008
+  ${SCRIPT_NAME} --restore-state
+  ${SCRIPT_NAME} --restore-state ~/Downloads/synced_state.txt.bak
   ${SCRIPT_NAME} --list
   ${SCRIPT_NAME} -re ax_deviceinfo/src/com/android/axion/deviceinfo/DeviceInfoProvider.kt
   ${SCRIPT_NAME} --repo device/oneplus/lemonade/device.mk
@@ -1303,6 +1327,79 @@ cmd_sync_dts() {
 }
 
 # ---------------------------------------------------------------------
+# -ss / --save-state, -rs / --restore-state
+# ---------------------------------------------------------------------
+STATE_FILE="${LOG_DIR}/synced_state.txt"
+
+cmd_save_state() {
+  local tag="${1:-}"
+  discover_repos
+  if [[ "${#REPO_PATHS[@]}" -eq 0 ]]; then
+    echo "${C_RED}error: no repositories found (looked for .repo/ or nested .git/ dirs)${C_RESET}"
+    return 2
+  fi
+  mkdir -p "$LOG_DIR"
+  local snap path sha
+  snap="$(mktemp)"
+  take_snapshot "$snap"
+  {
+    echo "# AxionOS synced state: path<TAB>HEAD<TAB>upstream name"
+    echo "# tag: ${tag:--}"
+    echo "# date: $(date '+%Y-%m-%d %H:%M:%S %z')"
+    echo "# manifest: $(basename "$(readlink -f .repo/local_manifests/local_manifest.xml 2>/dev/null)")"
+    while IFS=$'\t' read -r path sha; do
+      printf '%s\t%s\t%s\n' "$path" "$sha" "$(project_name_for "$path")"
+    done < "$snap"
+  } > "$STATE_FILE"
+  rm -f "$snap"
+  echo "${C_GREEN}==> saved ${#REPO_PATHS[@]} project HEADs to ${STATE_FILE}${C_RESET} (tag: ${tag:--})"
+}
+
+cmd_restore_state() {
+  local file="${1:-$STATE_FILE}"
+  [[ -f "$file" ]] || { echo "${C_RED}no state file at $file — run '${SCRIPT_NAME} --save-state' first, or pass a file${C_RESET}" >&2; return 2; }
+  echo "${C_BOLD}==> Restoring state from ${file}${C_RESET}"
+  grep -E '^# (tag|date|manifest):' "$file" | sed 's/^# /    /'
+
+  local -a todo=()
+  local path sha name cur
+  while IFS=$'\t' read -r path sha name; do
+    [[ -z "$path" || "$path" == \#* ]] && continue
+    if [[ ! -d "$path" ]]; then
+      echo "${C_YELLOW}[NOT IN TREE]${C_RESET} $path  ($name)"
+      continue
+    fi
+    cur="$(head_sha "$path")"
+    [[ "$cur" == "$sha" ]] && continue
+    if ! git -C "$path" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+      echo "${C_RED}[NO OBJECT]${C_RESET} $path  ($name)  wants ${sha:0:12}, not present locally — sync that project first"
+      continue
+    fi
+    # count_commits(recorded -> current): +N = commits made since, -M = recorded commits no longer in HEAD
+    echo "${C_GREEN}[DIFFERS]${C_RESET} $path  ($name)  ${cur:0:12} -> ${sha:0:12}  ($(count_commits "$path" "$sha" "$cur") vs recorded)"
+    todo+=("$path"$'\t'"$sha")
+  done < "$file"
+
+  if [[ "${#todo[@]}" -eq 0 ]]; then
+    echo "Tree already matches the saved state."
+    return 0
+  fi
+  local reply entry failed=0
+  read -rp "Check out the recorded commit in these ${#todo[@]} project(s)? [y/N] " reply
+  [[ "$reply" =~ ^[Yy]$ ]] || { echo "aborted."; return 1; }
+  for entry in "${todo[@]}"; do
+    path="${entry%%$'\t'*}"; sha="${entry#*$'\t'}"
+    if git -C "$path" checkout -q --detach "$sha"; then
+      echo "  restored: $path -> ${sha:0:12}"
+    else
+      echo "  ${C_RED}failed:   $path (uncommitted changes in the way?)${C_RESET}"
+      failed=$((failed + 1))
+    fi
+  done
+  [[ "$failed" -eq 0 ]]
+}
+
+# ---------------------------------------------------------------------
 # --device
 # ---------------------------------------------------------------------
 switch_manifest() {
@@ -1372,6 +1469,14 @@ main() {
       ;;
     -l|--list)
       cmd_list
+      ;;
+    -ss|--save-state)
+      shift
+      cmd_save_state "${1:-}"
+      ;;
+    -rs|--restore-state)
+      shift
+      cmd_restore_state "${1:-}"
       ;;
     -re|--repo)
       shift
