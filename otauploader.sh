@@ -27,6 +27,12 @@
 #                                        #   newest <N>.x folder. The file it replaces is kept
 #                                        #   as synced_state.txt.bak (two files per folder).
 #                                        #   A normal -pd build upload does the same.
+#   ./otauploader.sh --device lemonade -pd --sync-state --get [--beta] [--bak]
+#                                        # the reverse: download that folder's
+#                                        #   synced_state.txt (--bak: the .bak one) to
+#                                        #   repo-sync-logs/synced_state.txt, ready for
+#                                        #   track_changes.sh --restore-state. A local
+#                                        #   file already there is kept as .bak.
 #   ./otauploader.sh --dry-run          # parse + build the upload plan and the
 #                                        #   OTA manifest, print both, never connect
 #   ./otauploader.sh -pd ls [path]      # browse the pixeldrain filesystem read-only
@@ -61,6 +67,8 @@ AUTO=0
 DRY_RUN=0
 BETA=0
 SYNC_STATE_ONLY=0
+STATE_GET=0
+STATE_BAK=0
 DO_SF=0
 DO_PD=0
 PD_CMD=""
@@ -71,6 +79,8 @@ while [[ $# -gt 0 ]]; do
         --dry-run) DRY_RUN=1; shift ;;
         --beta) BETA=1; shift ;;
         --sync-state) SYNC_STATE_ONLY=1; shift ;;
+        --get) STATE_GET=1; shift ;;
+        --bak) STATE_BAK=1; shift ;;
         --device) DEVICE="$2"; shift 2 ;;
         --sourceforge|-sf) DO_SF=1; shift ;;
         --pixeldrain|-pd)
@@ -80,7 +90,7 @@ while [[ $# -gt 0 ]]; do
             esac
             ;;
         --help|-h)
-            sed -n '2,42p' "$0"; exit 0 ;;
+            sed -n '2,48p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -278,7 +288,7 @@ pd_put_state() {
 
 if (( SYNC_STATE_ONLY )); then
     (( DO_PD )) || abort "--sync-state uploads to pixeldrain: pass -pd"
-    [[ -f $STATE_FILE ]] || abort "$STATE_FILE not found — run track_changes.sh --save-state [tag] from the build root first"
+    (( STATE_GET )) || [[ -f $STATE_FILE ]] || abort "$STATE_FILE not found — run track_changes.sh --save-state [tag] from the build root first"
     if (( BETA )); then
         verdir="test"
     elif (( DRY_RUN )); then
@@ -293,7 +303,21 @@ print(max(v, key=lambda n: int(n[:-2])) if v else "")') || abort "pixeldrain: co
         [[ -n $verdir ]] || abort "no <N>.x folder under /$PD_BASE yet — upload a build first, or pass --beta"
     fi
     if (( DRY_RUN )); then
-        echo "--dry-run: would upload $STATE_FILE -> pixeldrain:/$PD_BASE/$verdir/$STATE_NAME (existing one -> $STATE_NAME.bak)"
+        if (( STATE_GET )); then
+            echo "--dry-run: would download pixeldrain:/$PD_BASE/$verdir/$STATE_NAME$( (( STATE_BAK )) && echo .bak) -> $STATE_FILE (existing one -> $STATE_NAME.bak)"
+        else
+            echo "--dry-run: would upload $STATE_FILE -> pixeldrain:/$PD_BASE/$verdir/$STATE_NAME (existing one -> $STATE_NAME.bak)"
+        fi
+        exit 0
+    fi
+    if (( STATE_GET )); then
+        remote="$PD_BASE/$verdir/$STATE_NAME"; (( STATE_BAK )) && remote+=".bak"
+        mkdir -p "$(dirname "$STATE_FILE")"
+        tmp=$(mktemp)
+        pd -o "$tmp" "$PD_API/filesystem/$(pd_urlpath "$remote")" || { rm -f "$tmp"; abort "pixeldrain: could not download /$remote"; }
+        [[ -f $STATE_FILE ]] && mv -f "$STATE_FILE" "$STATE_FILE.bak"
+        mv -f "$tmp" "$STATE_FILE"
+        echo "synced state downloaded: /$remote -> $STATE_FILE ($(sed -n 's/^# tag: //p' "$STATE_FILE"))"
         exit 0
     fi
     pd_put_state "$verdir"
