@@ -595,6 +595,103 @@ print_time_window_details() {
 }
 
 # ---------------------------------------------------------------------
+# prebuilt APK sync (Brave + KernelSU-Next manager)
+# ---------------------------------------------------------------------
+# Runs at the end of both --sync and --dts. Fetches the latest APKs into
+# the common device tree's prebuilt-apps/ folder (gitignored); the build
+# picks them up via that folder's Android.mk + the extras.mk guards.
+#   Brave : newest stable "Release" channel, arm64 Universal, sha256-checked.
+#   KSUN  : version read from the kernel's KSU_GIT_TAG (the -legacy suffix
+#           stripped); the spoofed manager, verified against the signing
+#           cert the kernel pins. Tag missing/not released -> the manager
+#           APK is removed so it drops out of the build.
+KSUN_REPO="KernelSU-Next/KernelSU-Next"
+KSUN_CERT_SHA256="79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"
+BRAVE_REPO="brave/brave-browser"
+COMMON_DIR="device/oneplus/sm8350-common"
+KERNEL_KBUILD="kernel/oneplus/sm8350/drivers/kernelsu/Kbuild"
+APK_HELPER="${SCRIPT_DIR}/prebuilt_apk.py"
+
+gh_json() { curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: reposcan" "https://api.github.com/$1"; }
+
+sync_brave() {
+  local dest="$1" json pick ver url cur tmp want got
+  if ! json="$(gh_json "repos/${BRAVE_REPO}/releases?per_page=30")"; then
+    echo "  ${C_YELLOW}Brave: GitHub unreachable — keeping existing APK${C_RESET}"; return 0
+  fi
+  if ! pick="$(printf '%s' "$json" | python3 "$APK_HELPER" brave-url)"; then
+    echo "  ${C_YELLOW}Brave: no stable Release with the arm64 Universal APK — keeping existing${C_RESET}"; return 0
+  fi
+  ver="${pick%%$'\t'*}"; url="${pick#*$'\t'}"
+  cur="$(cat "$dest/Brave.apk.version" 2>/dev/null || true)"
+  if [[ "$ver" == "$cur" && -f "$dest/Brave.apk" ]]; then
+    echo "  Brave: already at ${ver}"; return 0
+  fi
+  tmp="$(mktemp)"
+  if ! curl -fsSL -o "$tmp" "$url"; then
+    echo "  ${C_YELLOW}Brave: download failed — keeping existing${C_RESET}"; rm -f "$tmp"; return 0
+  fi
+  want="$(curl -fsSL "${url}.sha256" 2>/dev/null | awk '{print $1}')"
+  if [[ -n "$want" ]]; then
+    got="$(sha256sum "$tmp" | awk '{print $1}')"
+    if [[ "$want" != "$got" ]]; then
+      echo "  ${C_RED}Brave: sha256 mismatch — rejecting download${C_RESET}"; rm -f "$tmp"; return 0
+    fi
+  fi
+  mv -f "$tmp" "$dest/Brave.apk"; printf '%s' "$ver" > "$dest/Brave.apk.version"
+  echo "  ${C_GREEN}Brave: updated to ${ver}${C_RESET}"
+}
+
+sync_ksun() {
+  local dest="$1" tag rel url cur tmp cert
+  if [[ ! -f "$KERNEL_KBUILD" ]]; then
+    echo "  ${C_YELLOW}KSUN: ${KERNEL_KBUILD} not found — leaving manager APK as-is${C_RESET}"; return 0
+  fi
+  tag="$(grep -oE 'KSU_GIT_TAG[[:space:]]*:=[[:space:]]*[^[:space:]]+' "$KERNEL_KBUILD" | awk '{print $NF}')"
+  tag="${tag%-legacy}"
+  if [[ -z "$tag" ]]; then
+    echo "  ${C_YELLOW}KSUN: no KSU_GIT_TAG in kernel — removing manager APK${C_RESET}"
+    rm -f "$dest/KSUNManager.apk" "$dest/KSUNManager.apk.version"; return 0
+  fi
+  if ! rel="$(gh_json "repos/${KSUN_REPO}/releases/tags/${tag}")"; then
+    echo "  ${C_YELLOW}KSUN: release ${tag} not found — removing manager APK${C_RESET}"
+    rm -f "$dest/KSUNManager.apk" "$dest/KSUNManager.apk.version"; return 0
+  fi
+  cur="$(cat "$dest/KSUNManager.apk.version" 2>/dev/null || true)"
+  if [[ "$tag" == "$cur" && -f "$dest/KSUNManager.apk" ]]; then
+    echo "  KSUN: already at ${tag}"; return 0
+  fi
+  if ! url="$(printf '%s' "$rel" | python3 "$APK_HELPER" ksun-url)"; then
+    echo "  ${C_YELLOW}KSUN: ${tag} has no spoofed manager APK — keeping existing${C_RESET}"; return 0
+  fi
+  tmp="$(mktemp)"
+  if ! curl -fsSL -o "$tmp" "$url"; then
+    echo "  ${C_YELLOW}KSUN: download failed — keeping existing${C_RESET}"; rm -f "$tmp"; return 0
+  fi
+  cert="$(python3 "$APK_HELPER" v2cert "$tmp" 2>/dev/null || true)"
+  if [[ "$cert" != "$KSUN_CERT_SHA256" ]]; then
+    echo "  ${C_RED}KSUN: signing cert mismatch (${cert:-none}) — rejecting download${C_RESET}"; rm -f "$tmp"; return 0
+  fi
+  mv -f "$tmp" "$dest/KSUNManager.apk"; printf '%s' "$tag" > "$dest/KSUNManager.apk.version"
+  echo "  ${C_GREEN}KSUN: updated to ${tag} (spoofed, signature verified)${C_RESET}"
+}
+
+sync_apks() {
+  if [[ ! -d "$COMMON_DIR" ]]; then
+    echo ""; echo "${C_YELLOW}==> prebuilt APK sync skipped: ${COMMON_DIR} not found${C_RESET}"; return 0
+  fi
+  if ! command -v curl >/dev/null || ! command -v python3 >/dev/null; then
+    echo ""; echo "${C_YELLOW}==> prebuilt APK sync skipped: need curl and python3${C_RESET}"; return 0
+  fi
+  local dest="${COMMON_DIR}/prebuilt-apps"
+  mkdir -p "$dest"
+  echo ""
+  echo "${C_BOLD}==> Prebuilt APK sync (${dest})${C_RESET}"
+  sync_brave "$dest"
+  sync_ksun "$dest"
+}
+
+# ---------------------------------------------------------------------
 # -s / --sync
 # ---------------------------------------------------------------------
 cmd_sync() {
@@ -869,6 +966,8 @@ cmd_sync() {
       printf '  %-40s %-45s %s\n' "$path" "$(project_name_for "$path")" "${CHANGED_SUMMARY[$path]}"
     done | sort
   fi
+
+  sync_apks
 
   echo ""
   echo "${C_BOLD}Full log saved to:${C_RESET} $LOG_FILE"
@@ -1196,6 +1295,8 @@ cmd_sync_dts() {
       printf '  %-40s %-45s %s\n' "$path" "$(project_name_for "$path")" "${CHANGED_SUMMARY[$path]}"
     done | sort
   fi
+
+  sync_apks
 
   echo ""
   echo "${C_BOLD}Full log saved to:${C_RESET} $LOG_FILE"
