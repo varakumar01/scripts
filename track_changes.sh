@@ -647,16 +647,6 @@ COMMON_DIR="device/oneplus/sm8350-common"
 KERNEL_KBUILD="kernel/oneplus/sm8350/drivers/kernelsu/Kbuild"
 APK_HELPER="${SCRIPT_DIR}/prebuilt_apk.py"
 
-# unpack_apk_libs <apk> -- (re)create <apk minus .apk>-libs/ holding the APK's
-# arm64 native libraries, which prebuilt-apps/Android.mk installs beside it.
-unpack_apk_libs() {
-  local apk="$1" dir="${1%.apk}-libs"
-  rm -rf "$dir"
-  [[ -f "$apk" ]] || return 0
-  mkdir -p "$dir"
-  unzip -j -o -q "$apk" 'lib/arm64-v8a/*.so' -d "$dir" 2>/dev/null || rmdir "$dir" 2>/dev/null
-}
-
 gh_json() { curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: reposcan" "https://api.github.com/$1"; }
 
 sync_brave() {
@@ -734,8 +724,6 @@ sync_apks() {
   echo "${C_BOLD}==> Prebuilt APK sync (${dest})${C_RESET}"
   sync_brave "$dest"
   sync_ksun "$dest"
-  unpack_apk_libs "$dest/Brave.apk"
-  unpack_apk_libs "$dest/KSUNManager.apk"
 }
 
 # ---------------------------------------------------------------------
