@@ -324,7 +324,19 @@ print(max(v, key=lambda n: int(n[:-2])) if v else "")') || abort "pixeldrain: co
     exit 0
 fi
 
-[[ -d out/target/product/$DEVICE ]] || abort "out/target/product/$DEVICE not found — run this from the build root"
+# --device picks both the folder (out/target/product/<device>) and the zip
+# name (axion-*-<device>.zip). When either is missing, say which devices do
+# have a build here instead of only naming the one that was asked for.
+have_builds() {
+    local d list=()
+    for d in out/target/product/*/; do
+        d=${d%/}; d=${d##*/}
+        compgen -G "out/target/product/$d/axion-*-$d.zip" >/dev/null && list+=("$d")
+    done
+    (( ${#list[@]} )) && echo "builds found here for: ${list[*]}" || echo "no axion-*.zip for any device under out/target/product"
+}
+[[ -d out/target/product ]] || abort "out/target/product not found — run this from the build root"
+[[ -d out/target/product/$DEVICE ]] || abort "there is no $DEVICE build: out/target/product/$DEVICE does not exist ($(have_builds))"
 
 # --- SSH connection: one authenticated session, reused by every sftp call --
 # below via OpenSSH's own ControlMaster multiplexing, so nothing here depends
@@ -357,7 +369,14 @@ ROM=$(find "out/target/product/$DEVICE" -maxdepth 1 -type f \
         -name "axion-*-${DEVICE}.zip" \
         ! -name '*INCREMENTAL*' ! -name '*target_files*' \
         -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
-[[ -n "$ROM" ]] || abort "no axion-*-${DEVICE}.zip found under out/target/product/$DEVICE"
+[[ -n "$ROM" ]] || abort "there is no $DEVICE zip: no axion-*-${DEVICE}.zip under out/target/product/$DEVICE ($(have_builds))"
+# The name alone can lie (a renamed or copied zip): the package's own OTA
+# metadata names the device it was built for.
+if command -v unzip >/dev/null; then
+    zip_dev=$(unzip -p "$ROM" META-INF/com/android/metadata 2>/dev/null | sed -n 's/^pre-device=//p')
+    [[ -z $zip_dev || ,$zip_dev, == *,"$DEVICE",* ]] ||
+        abort "${ROM##*/} is named for $DEVICE but was built for $zip_dev — not uploading"
+fi
 
 # --- 2. parse version + date from the basename ------------------------------
 base=${ROM##*/}
