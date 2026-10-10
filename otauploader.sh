@@ -45,6 +45,8 @@
 #   ./otauploader.sh -pd -u <file> <dst>     # upload a local file (dst may be a dir or a full path)
 #   ./otauploader.sh -pd cp <src> <dst>      # copy a file (downloaded + re-uploaded)
 #   ./otauploader.sh -pd get <src> [local]   # download a file (default: its own name, here)
+#   ./otauploader.sh -pd share <path>...     # make a file or directory public and print
+#                                        #   its own page link, https://pixeldrain.com/d/<id>
 #                                        #   all paths are relative to /me
 set -euo pipefail
 
@@ -85,7 +87,7 @@ while [[ $# -gt 0 ]]; do
         --sourceforge|-sf) DO_SF=1; shift ;;
         --pixeldrain|-pd)
             case "${2:-}" in
-                ls|mkdir|rm|rmdir|cp|mv|get|up|-u) PD_CMD="$2"; shift 2; PD_ARGS=("$@"); break ;;
+                ls|mkdir|rm|rmdir|cp|mv|get|share|up|-u) PD_CMD="$2"; shift 2; PD_ARGS=("$@"); break ;;
                 *) DO_PD=1; shift ;;
             esac
             ;;
@@ -231,6 +233,16 @@ pd_cmd() {
                     pd_isdir "$a" && abort "/$(pd_norm "$a") is a directory (use rmdir, or rm -r)"
                     pd_run "rm /$(pd_norm "$a")" -X DELETE "$(pd_url "$a")"
                 fi
+            done ;;
+        share)
+            [[ $# -ge 1 ]] || abort "usage: -pd share <path>..."
+            local id
+            for a; do
+                pd_try -F action=update -F shared=true "$(pd_url "$a")" >/dev/null ||
+                    abort "pixeldrain: share /$(pd_norm "$a") failed (does it exist?)"
+                id=$(pd "$(pd_url "$a")?stat" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["path"][d["base_index"]].get("id") or "")')
+                [[ -n $id ]] || abort "pixeldrain: /$(pd_norm "$a") has no share id after sharing"
+                echo "/$(pd_norm "$a")  https://pixeldrain.com/d/$id"
             done ;;
         rmdir)
             [[ $# -ge 1 ]] || abort "usage: -pd rmdir <path>..."
