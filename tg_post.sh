@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # tg_post.sh — announce a finished build in a Telegram group with a Download
-# button. Reads the OTA manifest otauploader.sh wrote (OTA/<flavor>/<device>.json),
-# renders tg_message.txt, shows the exact message + link status, asks, then sends.
+# button, and above it Changelog, Community and Recovery (the build's recovery/
+# folder on pixeldrain, when there is one). Reads the OTA manifest
+# otauploader.sh wrote (OTA/<flavor>/<device>.json), renders tg_message.txt,
+# shows the exact message + link status, asks, then sends.
 #
 # Secrets (TG_BOT_TOKEN, TG_CHAT_ID) come from scripts/.env -- see .env.example.
 #
@@ -32,7 +34,7 @@ set -euo pipefail
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 [[ -f "$SCRIPT_DIR/.env" ]] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
 
-DEVICE=lemonade FLAVOR=GMS URL="" TEMPLATE="$SCRIPT_DIR/tg_message.txt" NOTES="" MD5="" TEXT="" BUTTON="" BETA=0 ROW2=0 CUSTOM=0 EDIT=0 DRY=0 YES=0
+DEVICE=lemonade FLAVOR=GMS URL="" TEMPLATE="$SCRIPT_DIR/tg_message.txt" NOTES="" MD5="" TEXT="" BUTTON="" RECOVERY_URL="" BETA=0 ROW2=0 CUSTOM=0 EDIT=0 DRY=0 YES=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --device) DEVICE="$2"; shift 2 ;;
@@ -164,14 +166,19 @@ v["model"] = "Oneplus 9 Pro" if v["device"] == "lemonadep" else "Oneplus 9"
 t = open(tf, encoding="utf-8").read()
 for k, val in v.items():
     t = t.replace("{%s}" % k, html.escape(str(val)))
-print(v["url"])  # first line = download link, rest = message (split below)
+# the images of this build sit in recovery/ beside the zip; its folder page
+rec = re.match(r"(https?://pixeldrain\.\w+)/api/filesystem/([^/]+)/(.+)/[^/]+$", v["url"])
+print(v["url"])  # first line = download link, second = recovery link, rest = message
+print("%s/d/%s/%s/recovery" % rec.groups() if rec else "")
 print("\n".join(l.rstrip() for l in t.rstrip().splitlines()))
 PY
 )
-    MSG=${OUT#*$'\n'}
+    REST=${OUT#*$'\n'}
+    RECOVERY_URL=${REST%%$'\n'*}
+    MSG=${REST#*$'\n'}
     [[ -n $URL ]] || URL=${OUT%%$'\n'*}
     BTN_LABEL="⬇ Download"
-    ROW2=1   # release posts also get Changelog | Community above the Download button
+    ROW2=1   # release posts also get Changelog | Community | Recovery above the Download button
 fi
 
 if (( EDIT )); then
@@ -181,13 +188,26 @@ fi
 
 BOT=$(tg getMe | python3 -c 'import json,sys; d=json.load(sys.stdin); print("@"+d["result"]["username"] if d.get("ok") else "INVALID TOKEN: "+str(d.get("description")))') || abort "getMe failed"
 LINK=""; [[ -n $URL ]] && { LINK=$(curl -sL -o /dev/null -r 0-0 -w '%{http_code}' "$URL" || echo "unreachable"); }
+# No Recovery button unless the folder is there (asked through the API: the
+# /d/ page answers 200 for any path).
+RECOVERY_SKIP=""
+if [[ -n $RECOVERY_URL ]]; then
+    rc=$(curl -sL -o /dev/null -w '%{http_code}' "${RECOVERY_URL/\/d\///api/filesystem/}?stat" || echo "unreachable")
+    [[ $rc == 200 ]] || { RECOVERY_SKIP="$RECOVERY_URL (HTTP $rc)"; RECOVERY_URL=""; }
+fi
 
 echo "================ Telegram post preview ================"
 echo "bot:     $BOT"
 echo "chat:    $TG_CHAT_ID"
 [[ -f $SCRIPT_DIR/tg_banner.png ]] && echo "image:   tg_banner.png"
 if [[ -n $URL ]]; then
-    (( ROW2 )) && { echo "button:  [📝 Changelog] -> $CHANGELOG_URL"; echo "         [💬 Community] -> $COMMUNITY_URL   (same row, above Download)"; }
+    if (( ROW2 )); then
+        echo "button:  [📝 Changelog] -> $CHANGELOG_URL"
+        echo "         [💬 Community] -> $COMMUNITY_URL"
+        [[ -n $RECOVERY_URL ]] && echo "         [🛠 Recovery] -> $RECOVERY_URL"
+        echo "         (one row, above Download)"
+        [[ -n $RECOVERY_SKIP ]] && echo "         no Recovery button: $RECOVERY_SKIP not found"
+    fi
     echo "button:  [$BTN_LABEL] -> $URL"
     case "$LINK" in 200|206) echo "link:    OK (HTTP $LINK)" ;; *) echo "link:    !! HTTP $LINK -- the button will not work" ;; esac
 else
@@ -202,8 +222,10 @@ if (( ! YES )); then read -rp "Send to Telegram? [y/N] " reply; [[ $reply =~ ^[Y
 [[ -n $MSG ]] || abort "empty message"
 EXTRA=()
 [[ -n $URL ]] && EXTRA=(--form-string "reply_markup=$(python3 -c 'import json,sys; kb=[[{"text":sys.argv[1],"url":sys.argv[2]}]]
-if sys.argv[3]=="1": kb.insert(0,[{"text":"📝 Changelog","url":sys.argv[4]},{"text":"💬 Community","url":sys.argv[5]}])
-print(json.dumps({"inline_keyboard":kb}))' "$BTN_LABEL" "$URL" "$ROW2" "$CHANGELOG_URL" "$COMMUNITY_URL")")
+if sys.argv[3]=="1":
+    kb.insert(0,[{"text":"📝 Changelog","url":sys.argv[4]},{"text":"💬 Community","url":sys.argv[5]}])
+    if sys.argv[6]: kb[0].append({"text":"🛠 Recovery","url":sys.argv[6]})
+print(json.dumps({"inline_keyboard":kb}))' "$BTN_LABEL" "$URL" "$ROW2" "$CHANGELOG_URL" "$COMMUNITY_URL" "$RECOVERY_URL")")
 # Banner goes out as a photo with the message as its caption (1024-char limit,
 # so longer messages fall back to plain text). tg_banner.png is a 1920px copy of
 # axion.png: sendPhoto rejects files over 10 MB.
