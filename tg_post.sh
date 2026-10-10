@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tg_post.sh — announce a finished build in a Telegram group with a Download
-# button, and above it Changelog, Community and Recovery (the build's recovery/
-# folder on pixeldrain, when there is one). Reads the OTA manifest
+# button, and above it Changelog, Community and Recovery (the recovery/ folder
+# beside the zip on pixeldrain, when it is shared). Reads the OTA manifest
 # otauploader.sh wrote (OTA/<flavor>/<device>.json), renders tg_message.txt,
 # shows the exact message + link status, asks, then sends.
 #
@@ -166,10 +166,10 @@ v["model"] = "Oneplus 9 Pro" if v["device"] == "lemonadep" else "Oneplus 9"
 t = open(tf, encoding="utf-8").read()
 for k, val in v.items():
     t = t.replace("{%s}" % k, html.escape(str(val)))
-# the images of this build sit in recovery/ beside the zip; its folder page
-rec = re.match(r"(https?://pixeldrain\.\w+)/api/filesystem/([^/]+)/(.+)/[^/]+$", v["url"])
-print(v["url"])  # first line = download link, second = recovery link, rest = message
-print("%s/d/%s/%s/recovery" % rec.groups() if rec else "")
+# the images sit in recovery/ beside the zip
+rec = re.match(r"(https?://pixeldrain\.\w+/api/filesystem/[^/]+/.+)/[^/]+$", v["url"])
+print(v["url"])  # first line = download link, second = recovery folder (API path), rest = message
+print("%s/recovery" % rec[1] if rec else "")
 print("\n".join(l.rstrip() for l in t.rstrip().splitlines()))
 PY
 )
@@ -188,12 +188,16 @@ fi
 
 BOT=$(tg getMe | python3 -c 'import json,sys; d=json.load(sys.stdin); print("@"+d["result"]["username"] if d.get("ok") else "INVALID TOKEN: "+str(d.get("description")))') || abort "getMe failed"
 LINK=""; [[ -n $URL ]] && { LINK=$(curl -sL -o /dev/null -r 0-0 -w '%{http_code}' "$URL" || echo "unreachable"); }
-# No Recovery button unless the folder is there (asked through the API: the
-# /d/ page answers 200 for any path).
+# The Recovery button links to the folder by its own share id, which opens on
+# that folder alone (a path under the Axion share would let a visitor browse
+# up). otauploader.sh shares it; no id, no button.
 RECOVERY_SKIP=""
 if [[ -n $RECOVERY_URL ]]; then
-    rc=$(curl -sL -o /dev/null -w '%{http_code}' "${RECOVERY_URL/\/d\///api/filesystem/}?stat" || echo "unreachable")
-    [[ $rc == 200 ]] || { RECOVERY_SKIP="$RECOVERY_URL (HTTP $rc)"; RECOVERY_URL=""; }
+    rid=$(curl -sL "$RECOVERY_URL?stat" | python3 -c 'import json,sys
+try: d=json.load(sys.stdin); print(d["path"][d["base_index"]].get("id") or "")
+except Exception: print("")')
+    if [[ -n $rid ]]; then RECOVERY_URL="https://pixeldrain.com/d/$rid"
+    else RECOVERY_SKIP=${RECOVERY_URL#*/api/filesystem/}; RECOVERY_URL=""; fi
 fi
 
 echo "================ Telegram post preview ================"
@@ -206,7 +210,7 @@ if [[ -n $URL ]]; then
         echo "         [💬 Community] -> $COMMUNITY_URL"
         [[ -n $RECOVERY_URL ]] && echo "         [🛠 Recovery] -> $RECOVERY_URL"
         echo "         (one row, above Download)"
-        [[ -n $RECOVERY_SKIP ]] && echo "         no Recovery button: $RECOVERY_SKIP not found"
+        [[ -n $RECOVERY_SKIP ]] && echo "         no Recovery button: $RECOVERY_SKIP is missing or not shared"
     fi
     echo "button:  [$BTN_LABEL] -> $URL"
     case "$LINK" in 200|206) echo "link:    OK (HTTP $LINK)" ;; *) echo "link:    !! HTTP $LINK -- the button will not work" ;; esac

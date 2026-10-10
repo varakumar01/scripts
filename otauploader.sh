@@ -213,6 +213,16 @@ pd_run() {  # pd_run <desc> <curl args...>
     echo "$desc: ok"
 }
 
+# pd_share <path under /me> -- make it public and print its own page link.
+# A link by a node's own id opens on that node: nothing above it is reachable.
+pd_share() {
+    local id
+    pd_try -F action=update -F shared=true "$(pd_url "$1")" >/dev/null || return 1
+    id=$(pd "$(pd_url "$1")?stat" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["path"][d["base_index"]].get("id") or "")')
+    [[ -n $id ]] || return 1
+    printf 'https://pixeldrain.com/d/%s' "$id"
+}
+
 pd_cmd() {
     local cmd="$PD_CMD" flag="" a
     set -- "${PD_ARGS[@]}"
@@ -236,13 +246,10 @@ pd_cmd() {
             done ;;
         share)
             [[ $# -ge 1 ]] || abort "usage: -pd share <path>..."
-            local id
+            local link
             for a; do
-                pd_try -F action=update -F shared=true "$(pd_url "$a")" >/dev/null ||
-                    abort "pixeldrain: share /$(pd_norm "$a") failed (does it exist?)"
-                id=$(pd "$(pd_url "$a")?stat" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["path"][d["base_index"]].get("id") or "")')
-                [[ -n $id ]] || abort "pixeldrain: /$(pd_norm "$a") has no share id after sharing"
-                echo "/$(pd_norm "$a")  https://pixeldrain.com/d/$id"
+                link=$(pd_share "$a") || abort "pixeldrain: share /$(pd_norm "$a") failed (does it exist?)"
+                echo "/$(pd_norm "$a")  $link"
             done ;;
         rmdir)
             [[ $# -ge 1 ]] || abort "usage: -pd rmdir <path>..."
@@ -675,6 +682,12 @@ if [[ $DO_PD -eq 1 ]]; then
         done
     fi
     echo "done."
+    # tg_post.sh's Recovery button links to this folder by its own id.
+    if PD_REC_LINK=$(pd_share "${PD_BASE#me/}/$verdir/recovery"); then
+        echo "recovery images: $PD_REC_LINK"
+    else
+        echo "warning: could not share /$PD_BASE/$verdir/recovery (no images uploaded?)" >&2
+    fi
     [[ -f $STATE_FILE ]] && pd_put_state "$verdir"
 
     pd_prune_old_builds
