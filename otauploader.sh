@@ -371,10 +371,13 @@ ROM=$(find "out/target/product/$DEVICE" -maxdepth 1 -type f \
         -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
 [[ -n "$ROM" ]] || abort "there is no $DEVICE zip: no axion-*-${DEVICE}.zip under out/target/product/$DEVICE ($(have_builds))"
 # The name alone can lie (a renamed or copied zip): the package's own OTA
-# metadata names the device it was built for.
+# metadata names the device it was built for. That is ro.product.device,
+# which the OnePlus trees override with the stock name (DeviceName=).
+declare -A STOCK_NAME=([lemonade]=OnePlus9 [lemonadep]=OnePlus9Pro)
 if command -v unzip >/dev/null; then
     zip_dev=$(unzip -p "$ROM" META-INF/com/android/metadata 2>/dev/null | sed -n 's/^pre-device=//p')
-    [[ -z $zip_dev || ,$zip_dev, == *,"$DEVICE",* ]] ||
+    [[ -z $zip_dev || ,$zip_dev, == *,"$DEVICE",* ||
+       ,$zip_dev, == *,"${STOCK_NAME[$DEVICE]:-$DEVICE}",* ]] ||
         abort "${ROM##*/} is named for $DEVICE but was built for $zip_dev — not uploading"
 fi
 
